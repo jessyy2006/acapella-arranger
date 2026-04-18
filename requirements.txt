@@ -33,3 +33,6 @@ scikit-learn>=1.3.0
 tqdm>=4.66.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
+
+# Jupyter kernel registration (needed on remote clusters / JupyterHub)
+ipykernel>=6.29.0
