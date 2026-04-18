@@ -7,6 +7,18 @@ A sequence looks like::
 Each note contributes one ``(PITCH | REST, DUR)`` pair; ``BAR`` marks a
 measure boundary. The format is intentionally dumb — the Transformer+LSTM
 hybrid downstream will do the heavy lifting.
+
+Known limitations (carried forward to the eval section of the final README)
+---------------------------------------------------------------------------
+* **Lossy duration quantisation.** Every note is snapped to one of eight
+  16th-grid buckets ``(1, 2, 3, 4, 6, 8, 12, 16)``. Tuplets (e.g. a Bach
+  8th-note triplet) and dotted-16ths lose their exact rhythm; they become
+  the nearest-duration straight note. Ties are collapsed into whatever
+  quantised duration each notehead lands on rather than being summed.
+  This is intentional for v1: the generative model only needs a
+  well-defined discrete output space, not millisecond-accurate rhythm.
+  Call this out in the eval write-up and measure its impact via
+  round-trip duration-error statistics when we run the ablation study.
 """
 
 from __future__ import annotations
