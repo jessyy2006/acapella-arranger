@@ -1,0 +1,85 @@
+# Aca-Adapt — Cursor Project Rules
+
+Cursor auto-loads this file. Keep it open in context or re-read if you switch projects.
+
+## What this project is
+
+Aca-Adapt turns an uploaded song into an editable four-part (soprano, alto, tenor, bass) a cappella arrangement. Pipeline: audio → HT-Demucs vocal isolation → torchcrepe pitch tracking → custom Transformer+LSTM hybrid predicts SATB → voice-leading post-process → music21 export → Streamlit UI. Final project for Duke CS 372 (Applied ML), due **Sunday 2026-04-26 at 11:59 pm**.
+
+## Tech stack
+
+Python 3.10 · PyTorch 2.11 · music21 · HT-Demucs · torchcrepe · Streamlit · pytest. Env: conda env named `aca-adapt`. Deploys to Streamlit Community Cloud. Training on Google Colab (free T4 GPU).
+
+## Who's working on what
+
+Two collaborators. Full split in `docs/PARTNER_BRIEF.md`. Short version:
+
+- **Jess** owns: data pipeline (done), model architecture + training code, final integration (`src/pipeline/run_pipeline.py`), voice-leading post-process, Streamlit app + deploy, demo video, README polish.
+- **You (partner on Cursor)** own: `src/models/baseline.py`, `src/pipeline/audio_to_midi.py`, `src/eval/*`, training wall-clock runs on Colab, technical walkthrough video.
+
+If you're unsure whether a file is in your lane, check `docs/PARTNER_BRIEF.md` before editing.
+
+## Where specs live
+
+Each of your lanes has a contract file under `docs/specs/`. Before writing code, open the spec for your current lane. Start there, not in source.
+
+- `docs/specs/baseline_model.md`
+- `docs/specs/audio_pipeline.md`
+- `docs/specs/evaluation.md`
+- `docs/specs/training_runs.md`
+
+Specs tell you: the input/output contract, what tests must pass, what files to read first, the rubric item this closes, and common pitfalls. They do **not** tell you how to implement — implementation decisions are yours to make, as long as the contract holds.
+
+## Code conventions
+
+- **Python 3.10+ syntax** — use `list[int]`, `dict[str, T]`, `str | None`. No `from typing import List, Dict, Optional` unless there's a reason.
+- **Type hints everywhere** in `src/`. Tests can be looser.
+- **No `print` in `src/`** — use `logging.getLogger(__name__)`. Scripts under `scripts/` may use `print` for user-visible status (match existing style).
+- **No `any`-equivalent types** — use `cast` or `assert isinstance` if narrowing is genuinely needed.
+- **Docstrings** on every public function/class. Module-level docstring explains the file's role in the pipeline.
+- **Comments explain *why*, not *what*.** Well-named identifiers already say what. Reserve comments for non-obvious constraints, known caveats, or pointers to docs.
+- **Imports**: `from __future__ import annotations` at the top of every file in `src/`. Absolute imports (`from src.data.vocab import PAD`), not relative.
+
+## Testing
+
+- `pytest` must stay green on your branch before every PR.
+- Every public function in `src/` gets a test in `tests/test_<module>.py`.
+- Use the existing `tests/test_tokenizer.py` and `tests/test_dataset.py` as style references.
+- Fast tests are preferred — the full suite should stay under 5 seconds.
+- If your code depends on data artifacts (`data/processed/*.pt`), include a `pytest.skip` guard so tests still run on fresh clones without those files.
+
+## Commit + branch style
+
+- **One branch per lane** named `feat/<area>-<short-desc>`. Examples: `feat/baseline-model`, `feat/audio-pipeline`, `feat/evaluation`.
+- **Cut branches from `main`** (not from each other's branches).
+- **Commit messages**: natural-language, imperative mood, lowercase first word, no prefix.
+  - Good: `add baseline transformer seq2seq model with shape tests`
+  - Bad: `feat(models): add baseline`
+  - Bad: `Added a baseline model.`
+- **No AI co-author footer.** Do not append `Co-Authored-By: Claude …` or similar.
+- **Open a draft PR early** — as soon as you have *something* committed. Let Jess review shape before you over-invest.
+
+## What NOT to touch
+
+- `src/data/*` — Jess's data pipeline. If you need changes here, open an issue or ping before editing.
+- `src/models/hybrid.py` — Jess's core architecture. Your `baseline.py` should live alongside it in the same folder.
+- `main` branch directly — always via PR.
+- `data/processed/*.pt` — derived artifacts, not source. Regenerate with `python scripts/prepare_data.py`.
+
+## What to read first, every session
+
+At the start of a Cursor session, paste or `@file`-attach:
+
+1. `docs/PRD.md` — product + system spec
+2. `docs/PARTNER_BRIEF.md` — roles, onboarding, timeline
+3. `docs/specs/<your-current-lane>.md` — the contract for what you're building
+4. Whichever source files the spec tells you to read
+
+That's the minimum context. Add more as the task evolves.
+
+## When stuck
+
+- Check `docs/specs/<lane>.md` for gotchas — common issues are pre-documented.
+- Run the relevant tests from `tests/` to see expected shapes.
+- If the spec is ambiguous or wrong, ping Jess on the PR — fixing the spec is cheap, building against the wrong one is expensive.
+- PR #1 on GitHub has the full Day 1 + Day 2 history and is a good reference for how the codebase is structured.
