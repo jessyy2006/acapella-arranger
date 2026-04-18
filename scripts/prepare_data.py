@@ -9,6 +9,11 @@ three ``torch.save``'d ``SATBDataset`` objects:
     data/processed/val.pt
     data/processed/test.pt
 
+Consumers should load these files with
+:func:`src.data.loaders.load_dataset` rather than calling ``torch.load``
+directly — PyTorch's ``weights_only=True`` default (2.6+) refuses to
+unpickle the full ``SATBDataset`` object.
+
 Idempotent — existing output files are kept unless ``--force`` is
 passed. All knobs (seed, split ratios, window size, per-source limits)
 are exposed as CLI flags so the same script can drive both smoke runs

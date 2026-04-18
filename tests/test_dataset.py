@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from pathlib import Path
 
 import pytest
 import torch
@@ -18,6 +19,7 @@ from src.data.load import is_clean_satb
 from src.data.loaders import (
     build_split,
     collate_satb,
+    load_dataset,
     make_dataloaders,
     split_scores_by_song,
 )
@@ -254,3 +256,44 @@ class TestDataLoader:
         first = [batch["lead"][0, :8].tolist() for batch in loaders["val"]]
         second = [batch["lead"][0, :8].tolist() for batch in loaders["val"]]
         assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Persistence — torch.save + load_dataset round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestPersistence:
+    def test_save_and_load_round_trip_preserves_examples(
+        self, jsb_scores: list[stream.Score], tmp_path: Path
+    ):
+        original = SATBDataset([("jsb", jsb_scores[0])], augment=False)
+        path = tmp_path / "dataset.pt"
+        torch.save(original, path)
+
+        loaded = load_dataset(path)
+        assert len(loaded) == len(original)
+        for i in range(len(original)):
+            for v in VOICE_KEYS:
+                assert torch.equal(loaded[i][v], original[i][v])
+
+    def test_load_dataset_accepts_string_path(
+        self, jsb_scores: list[stream.Score], tmp_path: Path
+    ):
+        original = SATBDataset([("jsb", jsb_scores[0])], augment=False)
+        path = tmp_path / "dataset.pt"
+        torch.save(original, path)
+        # Calling with a string instead of a Path should still work.
+        assert len(load_dataset(str(path))) == len(original)
+
+    def test_loaded_dataset_exposes_song_counters(
+        self, jsb_scores: list[stream.Score], tmp_path: Path
+    ):
+        original = SATBDataset(
+            [("jsb", jsb_scores[0]), ("jsb", jsb_scores[1])], augment=False
+        )
+        path = tmp_path / "dataset.pt"
+        torch.save(original, path)
+        loaded = load_dataset(path)
+        assert loaded.songs_kept == original.songs_kept
+        assert loaded.songs_skipped == original.songs_skipped
