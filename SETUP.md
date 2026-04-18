@@ -120,6 +120,71 @@ The live app is hosted on Streamlit Community Cloud. To deploy your own fork:
 3. Set entrypoint: `src/app/main.py`.
 4. Secrets (if any) go in the Streamlit Cloud dashboard, not in git.
 
+## Running in a remote Jupyter environment (Duke DCC or Colab)
+
+If you prefer to skip local installation and work on a remote cluster with a GPU, use one of the paths below.
+
+### Path A — Duke Compute Cluster via OnDemand JupyterLab
+
+1. Go to https://dcc-ondemand-01.oit.duke.edu (or your cluster's OnDemand URL) and sign in with your NetID.
+2. Launch a **JupyterLab** session. For data exploration no GPU is needed; for training, request 1 GPU and at least 16 GB RAM.
+3. Once JupyterLab opens, open a **Terminal** from the launcher and run:
+
+```bash
+# Clone the repo into your home directory
+git clone https://github.com/jessyy2006/acapella-arranger.git
+cd acapella-arranger
+
+# Set up the Python environment (uses whichever conda the cluster provides)
+conda create -n aca-adapt python=3.10 -y
+conda activate aca-adapt
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Register the env as a Jupyter kernel
+python -m ipykernel install --user --name=aca-adapt --display-name="Python (aca-adapt)"
+
+# Authenticate to HuggingFace
+huggingface-cli login   # paste a read token from https://huggingface.co/settings/tokens
+
+# Download the data
+python scripts/download_data.py
+```
+
+4. Back in the JupyterLab file browser, open `notebooks/01_data_exploration.ipynb`.
+5. From the kernel picker (top-right of the notebook), select **Python (aca-adapt)**.
+6. Run cells top-to-bottom.
+
+### Path B — Google Colab
+
+1. Open a new notebook at https://colab.research.google.com.
+2. In the first cell, clone the repo and install requirements:
+
+```python
+!git clone https://github.com/jessyy2006/acapella-arranger.git
+%cd acapella-arranger
+!pip install -r requirements.txt -q
+```
+
+3. Authenticate to HuggingFace (paste your token when prompted):
+
+```python
+from huggingface_hub import notebook_login
+notebook_login()
+```
+
+4. Download the data:
+
+```python
+!python scripts/download_data.py
+```
+
+5. Open `notebooks/01_data_exploration.ipynb` from the Colab file browser and run it.
+
+To enable GPU on Colab: **Runtime → Change runtime type → T4 GPU**.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
