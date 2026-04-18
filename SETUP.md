@@ -4,7 +4,7 @@ Step-by-step installation and usage for Aca-Adapt.
 
 ## Prerequisites
 
-- **Python 3.10+** — `python --version`
+- **Python 3.10 or 3.11.** Python 3.12 and 3.13 are NOT supported — several audio ML libraries (Demucs, TensorFlow-adjacent stuff) lag behind the latest CPython.
 - **ffmpeg** (required by Demucs and yt-dlp)
   - macOS: `brew install ffmpeg`
   - Linux: `sudo apt install ffmpeg`
@@ -19,13 +19,29 @@ git clone <repo-url>
 cd "Acapella Arranger"
 ```
 
-## 2. Create a virtual environment
+## 2. Create an isolated Python environment
+
+Pick ONE of the two paths below.
+
+### Path A — Conda (recommended if you have Anaconda / Miniconda installed)
 
 ```bash
+conda create -n aca-adapt python=3.10 -y
+conda activate aca-adapt
+```
+
+### Path B — venv (if you have a native Python 3.10 or 3.11 install)
+
+```bash
+# Verify you have 3.10 or 3.11
+python3.10 --version   # or python3.11 --version
+
 python3.10 -m venv .venv
 source .venv/bin/activate   # macOS / Linux
 # .venv\Scripts\activate    # Windows PowerShell
 ```
+
+If `python3.10` is not found, install it with `brew install python@3.10` (macOS) or use Path A.
 
 ## 3. Install Python dependencies
 
@@ -35,7 +51,7 @@ pip install -r requirements.txt
 ```
 
 Notes:
-- `crepe` pulls TensorFlow; installation can take several minutes.
+- Pitch tracking uses `torchcrepe` (PyTorch port of CREPE) — no TensorFlow dependency, so installs are fast and stable.
 - On Apple Silicon, PyTorch uses MPS automatically where available.
 - First inference downloads HT-Demucs weights (~2 GB) — subsequent runs use the cached weights.
 
