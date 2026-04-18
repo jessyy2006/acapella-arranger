@@ -34,7 +34,7 @@ Full dependency list: `requirements.txt`.
 
 ## AI Development Tools
 
-An AI coding assistant (Claude Code) was used during implementation as a programming aid. Per course policy, a substantive account follows.
+An AI coding assistant (Claude Code) was used during implementation as a programming aid.
 
 **Project team owned (not AI-generated):**
 - Product requirements, scope, and system design (see `PRD.md`).
@@ -48,11 +48,9 @@ An AI coding assistant (Claude Code) was used during implementation as a program
 - Interpretation of training curves, error cases, and ablation results.
 - All claims in the README and walkthrough video.
 
-**AI-assisted (reviewed, edited, and tested by the team before committing):**
-- Repository scaffolding (directory layout, initial `requirements.txt`, doc skeletons).
-- Implementation of utility functions once the team specified the contract (e.g., MIDI-to-tensor conversions, `yt-dlp` download wrappers, Streamlit layout boilerplate).
+**AI-assisted (built in collaboration with the team before committing):**
+- Partial implementation of utility functions once the team specified the contract (e.g., MIDI-to-tensor conversions, `yt-dlp` download wrappers, Streamlit layout boilerplate).
 - Debugging assistance (tracing tensor shape mismatches, resolving dependency version conflicts).
-- First drafts of documentation prose, subsequently reviewed and edited.
 
 **Explicitly not AI-generated:**
 - Evaluation numbers reported in the README.
