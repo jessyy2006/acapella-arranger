@@ -1,6 +1,6 @@
 # Aca-Adapt
 
-Convert any song into an editable four-part SATB a cappella arrangement.
+Convert any song into an editable four-part SATB (Soprano, Alto, Tenor, Bass) a cappella arrangement. Upload an audio file and download a MIDI or MusicXML score that opens in any notation software for further editing.
 
 ---
 
@@ -75,7 +75,7 @@ Both partners contributed equally to project design, PRD, ablation design, and t
 
 ## Documentation
 
-- [PRD.md](PRD.md) — product requirements, architecture, scoring plan
+- [docs/PRD.md](docs/PRD.md) — product requirements, architecture, scoring plan
 - [SETUP.md](SETUP.md) — installation, training, reproduction
 - [ATTRIBUTION.md](ATTRIBUTION.md) — pretrained models, datasets, libraries, AI-tool usage
 

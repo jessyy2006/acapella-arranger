@@ -37,7 +37,7 @@ Full dependency list: `requirements.txt`.
 An AI coding assistant (Claude Code) was used during implementation as a programming aid.
 
 **Project team owned (not AI-generated):**
-- Product requirements, scope, and system design (see `PRD.md`).
+- Product requirements, scope, and system design (see `docs/PRD.md`).
 - Choice of pipeline decomposition (Demucs → CREPE → harmony model → export).
 - Custom architecture decision (hybrid Transformer + LSTM vs alternatives).
 - Two-stage training strategy (JSB Chorales pretrain → jaCappella fine-tune).
