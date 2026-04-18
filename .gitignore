@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.Python
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.python-version
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data and model artifacts (large files)
+data/raw/
+data/processed/
+data/youtube/
+models/*.pt
+models/*.pth
+models/checkpoints/
+outputs/
+
+# Audio / MIDI test artifacts
+*.wav
+*.mp3
+*.mp4
+*.flac
+*.mid
+*.midi
+*.musicxml
+
+# Keep placeholder files
+!**/.gitkeep
+
+# Secrets and env
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs and temp
+logs/
+*.log
+tmp/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
