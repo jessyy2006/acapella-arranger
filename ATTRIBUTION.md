@@ -59,6 +59,39 @@ An AI coding assistant (Claude Code) was used during implementation as a program
 
 The training loop, loss computation, custom model architecture, and evaluation pipeline were hand-reviewed line-by-line by the team.
 
+### Implementation Log
+
+Per-file record of Claude Code's contribution to each committed artifact, kept current as the project progresses. **Designed** = the team specified the contract, interfaces, and approach; Claude filled in implementation details against that spec. **Drafted** = Claude produced an initial version that the team reviewed, edited, and tested before commit. All files were hand-reviewed before each commit.
+
+#### Day 1 (2026-04-18) — repo scaffold + data exploration
+
+| File | Team ownership | Claude Code role |
+|---|---|---|
+| `docs/PRD.md` | product scope, pipeline architecture, 15-item rubric plan | section formatting, cross-reference checks |
+| `scripts/download_data.py` | HuggingFace snapshot strategy, gated-dataset handling flow | drafted implementation |
+| `notebooks/01_data_exploration.ipynb` | six analysis questions, filter criteria, clean-SATB definition | drafted cells; wrote `parse_lenient` and `is_clean_satb` helpers |
+| `SETUP.md`, `README.md`, `PARTNER_BRIEF.md` | structure, prerequisites list, partner onboarding steps | prose drafting |
+| `requirements.txt`, `.gitignore` | pin policy, ignore policy | drafted |
+
+#### Day 2 (2026-04-18) — tokenizer + data pipeline
+
+| File | Team ownership | Claude Code role |
+|---|---|---|
+| `src/data/load.py` | designed (promote notebook helpers into a module) | drafted |
+| `src/data/vocab.py` | designed token layout (141-id space: 5 specials + 128 MIDI pitches + 8 duration buckets on the 16th-note grid) | implementation |
+| `src/data/tokenizer.py` | designed (interleaved `PITCH/REST` + `DUR` pair grammar, BAR at measure boundaries, defensive chord-collapse fallback) | `encode_part` / `decode_part` implementation |
+| `src/data/augmentation.py` | designed (×12 transposition range, 8-bar / 4-bar sliding windows, None-signals-skip contract for out-of-range shifts) | implementation |
+| `src/data/dataset.py` | designed (per-source voice routing, pre-materialised augmentation, min-window alignment to prevent voice mis-pairing) | implementation |
+| `src/data/loaders.py` | designed (70/15/15 by-song split to prevent leakage, train-only augmentation, per-voice padding collate with length tensors, `load_dataset` wrapper for PyTorch's `weights_only=True` default) | implementation |
+| `scripts/prepare_data.py` | designed (argparse surface, idempotency contract, canonical-variant dedup for jaCappella's three-lyric-variant trap) | implementation |
+| `tests/test_tokenizer.py`, `tests/test_augmentation.py`, `tests/test_dataset.py` (92 tests) | acceptance criteria, edge cases to cover, round-trip invariants | test code |
+| `pytest.ini` | test discovery config | drafted |
+
+Notable user-directed course corrections on Day 2:
+- Catching that the jaCappella dataset ships each song as three musically identical MusicXML variants (base / romaji / SVS) that the first draft of `prepare_data.py` loaded indiscriminately — left unfixed, this would have triple-counted every song and leaked duplicates across the train/val/test split.
+- Requiring that the lossy duration quantisation (tuplets and dotted-16ths snap to the nearest 16th-grid bucket) be flagged in both the `tokenizer.py` module docstring and the persistent scoring plan, so it surfaces in the final README's evaluation section rather than being silently absorbed.
+- Catching the PyTorch ≥2.6 `weights_only=True` default in code review, before it blocked the Day 3 training-data load.
+
 ## Academic References
 
 - Rouard, S., Massa, F., & Défossez, A. (2023). *Hybrid Transformers for Music Source Separation.* ICASSP 2023.

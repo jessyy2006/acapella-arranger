@@ -14,6 +14,7 @@ downstream Transformer+LSTM hybrid.
 from __future__ import annotations
 
 import random
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -127,3 +128,18 @@ def make_dataloaders(
             collate_fn=collate_satb,
         )
     return loaders
+
+
+def load_dataset(path: str | Path) -> SATBDataset:
+    """Load a cached SATBDataset written by ``scripts/prepare_data.py``.
+
+    Use this in place of ``torch.load(path)``. The cached payload is a
+    pickled Python object (lists of ints, not tensor state), and
+    PyTorch ≥2.6 defaults ``torch.load`` to ``weights_only=True``, which
+    refuses to unpickle arbitrary Python objects. This helper passes
+    ``weights_only=False`` explicitly.
+
+    Only call this on ``.pt`` files you produced yourself — unpickling
+    an untrusted payload can execute arbitrary code.
+    """
+    return torch.load(str(path), weights_only=False)
