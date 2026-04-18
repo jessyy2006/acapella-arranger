@@ -74,47 +74,41 @@ Rough load split: Jess ~65%, you ~35%. Jess is taking the UI and final integrati
 
 Both of us touch the `Individual Contributions` section of the README — it's a rubric-required accounting of who did what.
 
+## Your lane contracts
+
+The detailed contract for each of your deliverables lives in [`docs/specs/`](./specs/). **Read the spec for a lane before writing any code in that lane** — specs tell you the exact interface, required tests, acceptance criteria, and gotchas.
+
+Start with [`docs/specs/README.md`](./specs/README.md) — it's the index and explains how to use the spec files. Then pick your next task:
+
+| Your next task | Open this spec |
+|---|---|
+| Build the baseline model for ablation | [`docs/specs/baseline_model.md`](./specs/baseline_model.md) |
+| Build the audio→tokens pipeline | [`docs/specs/audio_pipeline.md`](./specs/audio_pipeline.md) |
+| Build the evaluation + ablation harness | [`docs/specs/evaluation.md`](./specs/evaluation.md) |
+| Kick off training runs on Colab | [`docs/specs/training_runs.md`](./specs/training_runs.md) |
+
 ## Onboarding steps (Cursor or whatever editor you use)
 
 1. **Clone + env**: follow `SETUP.md` Path A (Duke DCC) or Path B (Colab) or Path B' (local conda). `pip install -r requirements.txt` gets you everything including pytest.
 2. **Run the test suite**: `pytest` should show ~97 passing in ~3 seconds. If not, your env is broken.
 3. **Run `prepare_data.py`**: `python scripts/prepare_data.py` produces `data/processed/{train,val,test}.pt`. Verifies data access end-to-end.
 4. **Skim the docs in this order**: `README.md` → `docs/PRD.md` → `docs/PARTNER_BRIEF.md` (this file) → `ATTRIBUTION.md` → `SETUP.md`. ~20 min total read.
-5. **Read your lane's source** before writing anything:
-   - For the audio pipeline: `src/data/tokenizer.py` + `src/data/vocab.py` (you'll be outputting tokens in this format) + `scripts/download_data.py` (for Demucs' expected audio format)
-   - For eval + ablation: `src/data/loaders.py` (for `collate_satb` + `load_dataset`) + `src/models/hybrid.py` (understand what you're evaluating) + `tests/test_models.py` (shape examples)
-   - For baseline: `src/models/hybrid.py` (copy the forward-pass contract; strip the LSTM; use one decoder head that predicts all 4 voices or four heads as-is) + `tests/test_models.py` (mirror those tests)
+5. **Open the spec for your current task** in `docs/specs/` and read it top-to-bottom. It tells you the interface contract, required tests, files to read, gotchas, and acceptance criteria. Don't write code before reading the spec.
 6. **Point Cursor at context**: see below.
 
 ## Pointing Cursor at the right context
 
-When you start a Cursor session for a specific lane, attach these files as context (Cursor's `@` reference or paste into the chat) so it has the same picture we've been building:
+Cursor auto-loads **`.cursorrules`** at the repo root every session — it covers the persistent project conventions (stack, code style, commit format, test requirements). You shouldn't need to re-brief it each time you open the project.
 
-**For any task** — always attach these first:
-- `docs/PRD.md` (product spec)
-- `docs/PARTNER_BRIEF.md` (this file)
-- `ATTRIBUTION.md` (scope boundaries — what's AI-assisted vs owned)
-- `README.md` (high-level framing)
+At the **start of a Cursor session for a specific task**, attach these as context (Cursor's `@` reference or paste the path into the chat):
 
-**If you're working on the baseline model** (`src/models/baseline.py`):
-- `src/models/hybrid.py` (contract to match)
-- `tests/test_models.py` (tests to mirror)
-- `src/data/loaders.py` (batch shape)
-- `src/data/vocab.py` (token grammar)
+1. **Always** — `docs/PRD.md`, `docs/PARTNER_BRIEF.md` (this file), `docs/specs/<your-current-lane>.md`.
+2. **The files your spec's "Files to read first" section lists** — each spec enumerates the source files you need. Attach those.
+3. **The specific test file** you'll be modifying or mirroring (e.g., `tests/test_models.py` when building the baseline).
 
-**If you're working on the audio pipeline** (`src/pipeline/audio_to_midi.py`):
-- `src/data/tokenizer.py` (output format)
-- `src/data/vocab.py` (what tokens mean)
-- `notebooks/02_tokenizer_sanity.ipynb` (example of the tokenizer round-trip)
-- Relevant Demucs + torchcrepe docs (external)
+The spec for each lane already has a "Files to read first" section — treat it as your checklist. Don't over-attach: Cursor's context window still matters, and attaching the whole codebase dilutes what it pays attention to.
 
-**If you're working on eval + ablation** (`src/eval/`):
-- `src/models/hybrid.py` (forward contract)
-- `src/data/loaders.py` (`load_dataset`, `collate_satb`)
-- `data/processed/val.pt`, `test.pt` (the actual data)
-- Any training-loop code Jess has shipped at that point
-
-A `.cursorrules` file at repo root may also help Cursor keep project context across sessions — Jess can add one if you want; ping him.
+If Cursor's output ignores a convention in `.cursorrules` (e.g., adds an AI co-author footer to a commit message), remind it explicitly in the chat — auto-loaded rules sometimes get overridden by Cursor's defaults.
 
 ## Staying in sync
 
