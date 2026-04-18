@@ -14,6 +14,9 @@ music21>=9.1.0
 pretty_midi>=0.2.10
 mido>=1.3.0
 
+# Dataset hosting
+huggingface_hub>=0.20.0
+
 # Web UI and deployment
 streamlit>=1.30.0
 

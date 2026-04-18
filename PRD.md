@@ -58,8 +58,8 @@ Aca-Adapt addresses the "black box" problem of contemporary music-generation AI:
 
 | Source | Role | Format | License / Access |
 |---|---|---|---|
-| **jaCappella corpus** | Phase B fine-tuning (Japanese modern a cappella) | MIDI | Academic, via HuggingFace |
-| **JSB Chorales** | Phase A pretraining (Bach SATB chorales) | MIDI | Public domain, via `music21.corpus.chorales.Iterator()` |
+| **jaCappella corpus** | Phase B fine-tuning (Japanese modern a cappella) | MusicXML (6 voice parts: Lead, S, A, T, B, Vocal Percussion) | Gated, via HuggingFace with license acceptance |
+| **JSB Chorales** | Phase A pretraining (Bach SATB chorales) | MusicXML (via `music21.corpus.chorales.Iterator()`) | Public domain |
 | **YouTube audio via `yt-dlp`** | Inference-time real-world testing only | Audio | Test-time only — **not claimed as training data** |
 
 Effective training pool after augmentation: ~420 source songs × 12 transpositions × sliding-window chunking ≈ **~8,000 training sequences.**
