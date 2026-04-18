@@ -61,3 +61,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Course materials (kept locally, never published)
+final_project_handout.html
