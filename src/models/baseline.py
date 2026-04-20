@@ -97,8 +97,11 @@ class VoiceTransformerDecoder(nn.Module):
         memory_pad_mask: Tensor,  # (B, L_lead), True where PAD
     ) -> Tensor:
         l_tgt = target_emb.size(1)
-        causal = nn.Transformer.generate_square_subsequent_mask(l_tgt).to(
-            device=target_emb.device
+        # Bool causal mask (True = masked). Matches tgt_key_padding_mask's dtype
+        # so PyTorch doesn't warn/error about mixed float/bool attention masks.
+        causal = torch.triu(
+            torch.ones(l_tgt, l_tgt, dtype=torch.bool, device=target_emb.device),
+            diagonal=1,
         )
         decoded = self.decoder(
             tgt=target_emb,
