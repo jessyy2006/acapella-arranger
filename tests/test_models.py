@@ -15,6 +15,7 @@ from src.data.dataset import SATBDataset
 from src.data.load import is_clean_satb
 from src.data.loaders import collate_satb
 from src.data.vocab import PAD, VOCAB_SIZE
+from src.models.baseline import SATBBaseline
 from src.models.hybrid import SATBHybrid
 
 
@@ -193,6 +194,101 @@ class TestRealCollateIntegration:
         self, tiny_model: SATBHybrid, real_batch: dict[str, torch.Tensor]
     ):
         logits = tiny_model(real_batch)
+        batch_size = real_batch["lead"].shape[0]
+        for voice in VOICES:
+            expected = (batch_size, real_batch[voice].shape[1], VOCAB_SIZE)
+            assert logits[voice].shape == expected
+
+
+# ---------------------------------------------------------------------------
+# Baseline (pure Transformer) tests — mirrors hybrid + adds explicit causality.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tiny_baseline() -> SATBBaseline:
+    torch.manual_seed(0)
+    return SATBBaseline(
+        d_model=64,
+        n_heads=4,
+        n_encoder_layers=2,
+        n_decoder_layers=2,
+        d_ff=128,
+        dropout=0.0,  # deterministic forward for invariance/causality tests
+    ).eval()
+
+
+class TestBaseline:
+    def test_returns_logits_for_all_four_voices(self, tiny_baseline: SATBBaseline):
+        batch = _make_synthetic_batch()
+        logits = tiny_baseline(batch)
+        assert set(logits.keys()) == set(VOICES)
+
+    def test_logits_match_target_length_per_voice(self, tiny_baseline: SATBBaseline):
+        voice_lens = {"s": 18, "a": 22, "t": 19, "b": 24}
+        batch = _make_synthetic_batch(voice_lens=voice_lens)
+        logits = tiny_baseline(batch)
+        for voice, length in voice_lens.items():
+            assert logits[voice].shape == (2, length, VOCAB_SIZE), (
+                f"voice {voice}: expected (2, {length}, {VOCAB_SIZE}), "
+                f"got {tuple(logits[voice].shape)}"
+            )
+
+    def test_logits_are_finite(self, tiny_baseline: SATBBaseline):
+        batch = _make_synthetic_batch()
+        logits = tiny_baseline(batch)
+        for voice, lg in logits.items():
+            assert torch.isfinite(lg).all(), f"voice {voice} produced non-finite logits"
+
+    def test_padding_invariance(self, tiny_baseline: SATBBaseline):
+        torch.manual_seed(7)
+        lead_short = torch.randint(5, 133, (1, 12))  # 12 real tokens, no PAD
+        lead_long = torch.cat(
+            [lead_short, torch.full((1, 8), PAD, dtype=torch.long)], dim=1
+        )  # same 12 real + 8 PAD
+
+        mem_short, _ = tiny_baseline.encode(lead_short)
+        mem_long, _ = tiny_baseline.encode(lead_long)
+
+        diff = (mem_short - mem_long[:, :12, :]).abs().max().item()
+        assert diff < 1e-4, f"max diff at valid positions = {diff}"
+
+    def test_is_causal_on_decoder(self, tiny_baseline: SATBBaseline):
+        # If we change a FUTURE token in the target sequence, logits at EARLIER
+        # positions must not change (causal mask enforced).
+        torch.manual_seed(123)
+        batch = _make_synthetic_batch(
+            batch_size=2,
+            lead_len=16,
+            voice_lens={"s": 12, "a": 12, "t": 12, "b": 12},
+        )
+
+        voice = "s"
+        batch_1 = {k: v.clone() for k, v in batch.items()}
+        batch_2 = {k: v.clone() for k, v in batch.items()}
+
+        # Flip a token near the end of the soprano target.
+        batch_2[voice][0, 10] = (batch_2[voice][0, 10] + 7) % VOCAB_SIZE
+        if batch_2[voice][0, 10].item() == PAD:
+            batch_2[voice][0, 10] = 5
+
+        logits_1 = tiny_baseline(batch_1)[voice]
+        logits_2 = tiny_baseline(batch_2)[voice]
+
+        # Earlier position logits must match exactly.
+        assert torch.equal(logits_1[:, :8, :], logits_2[:, :8, :])
+
+    def test_param_count_is_comparable_to_hybrid(self):
+        base = SATBBaseline().num_parameters()
+        hybrid = SATBHybrid().num_parameters()
+        lo = int(hybrid * 0.5)
+        hi = int(hybrid * 1.5)
+        assert lo <= base <= hi, (
+            f"baseline params {base:,} not within ±50% of hybrid {hybrid:,}"
+        )
+
+    def test_integration_with_real_collate(self, tiny_baseline: SATBBaseline, real_batch: dict[str, torch.Tensor]):
+        logits = tiny_baseline(real_batch)
         batch_size = real_batch["lead"].shape[0]
         for voice in VOICES:
             expected = (batch_size, real_batch[voice].shape[1], VOCAB_SIZE)
