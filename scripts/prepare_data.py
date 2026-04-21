@@ -107,11 +107,30 @@ def _load_jacappella(root: Path, limit: int | None) -> list[stream.Score]:
     return out
 
 
+# Three corpus combinations emit nine output files. Phase A (JSB pretrain)
+# reads the ``_jsb`` files; Phase B (jaCappella fine-tune) reads the
+# ``_jacappella`` files; the unsuffixed files back any combined-corpus
+# training (smoke runs, eval). All three builds use the same seed so the
+# per-song partition lines up across corpora.
+_CORPUS_COMBOS: tuple[tuple[str, bool, bool], ...] = (
+    ("", True, True),
+    ("_jsb", True, False),
+    ("_jacappella", False, True),
+)
+
+
+def _all_target_paths(out_dir: Path) -> dict[str, Path]:
+    """Return {logical_name: path} for every file ``run()`` may write."""
+    return {
+        f"{split}{suffix}": out_dir / f"{split}{suffix}.pt"
+        for suffix, _, _ in _CORPUS_COMBOS
+        for split in ("train", "val", "test")
+    }
+
+
 def run(config: PrepareConfig) -> int:
     """Execute the full preprocessing pipeline. Returns a shell-style exit code."""
-    targets = {
-        name: config.out_dir / f"{name}.pt" for name in ("train", "val", "test")
-    }
+    targets = _all_target_paths(config.out_dir)
 
     if not config.force and all(p.exists() for p in targets.values()):
         print("All outputs already exist; pass --force to rebuild:")
@@ -134,30 +153,41 @@ def run(config: PrepareConfig) -> int:
         f"\nBuilding splits (seed={config.seed}, ratios={config.ratios}, "
         f"window={config.window_bars} bars, hop={config.hop_bars} bars)..."
     )
-    splits = build_split(
-        jsb,
-        jac,
-        ratios=config.ratios,
-        seed=config.seed,
-        window_bars=config.window_bars,
-        hop_bars=config.hop_bars,
-    )
 
-    print("\nWriting datasets:")
-    for name, dataset in splits.items():
-        path = targets[name]
-        torch.save(dataset, path)
-        size_mb = path.stat().st_size / 1e6
-        display = (
-            path.relative_to(PROJECT_ROOT)
-            if path.is_relative_to(PROJECT_ROOT)
-            else path
+    for suffix, use_jsb, use_jac in _CORPUS_COMBOS:
+        label = suffix[1:] if suffix else "combined"
+        jsb_input = jsb if use_jsb else []
+        jac_input = jac if use_jac else []
+
+        if not jsb_input and not jac_input:
+            # Nothing to build for this combo (e.g. --limit-jsb 0 on _jsb).
+            print(f"  {label}: skipped (no input scores)")
+            continue
+
+        splits = build_split(
+            jsb_input,
+            jac_input,
+            ratios=config.ratios,
+            seed=config.seed,
+            window_bars=config.window_bars,
+            hop_bars=config.hop_bars,
         )
-        print(
-            f"  {name}: {len(dataset):>6} examples from "
-            f"{dataset.songs_kept:>3} songs ({dataset.songs_skipped} skipped)  "
-            f"-> {display} ({size_mb:.1f} MB)"
-        )
+
+        print(f"\nWriting {label} datasets:")
+        for name, dataset in splits.items():
+            path = targets[f"{name}{suffix}"]
+            torch.save(dataset, path)
+            size_mb = path.stat().st_size / 1e6
+            display = (
+                path.relative_to(PROJECT_ROOT)
+                if path.is_relative_to(PROJECT_ROOT)
+                else path
+            )
+            print(
+                f"  {name}{suffix}: {len(dataset):>6} examples from "
+                f"{dataset.songs_kept:>3} songs ({dataset.songs_skipped} skipped)  "
+                f"-> {display} ({size_mb:.1f} MB)"
+            )
 
     print("\nDone.")
     return 0
