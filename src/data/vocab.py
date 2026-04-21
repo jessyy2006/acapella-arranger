@@ -47,6 +47,16 @@ VOCAB_SIZE: Final[int] = DUR_OFFSET + len(DUR_BUCKETS)  # 141
 
 SPECIAL_TOKENS: Final[frozenset[int]] = frozenset({PAD, SOS, EOS, BAR, REST})
 
+# Observed per-voice MIDI ranges across the training corpus (Day 1 data
+# exploration). Shared by the evaluation metrics (range-compliance check)
+# and the post-processor (range-clamp rule) so both consult one source.
+SATB_RANGES: Final[dict[str, tuple[int, int]]] = {
+    "s": (55, 81),
+    "a": (50, 76),
+    "t": (47, 74),
+    "b": (31, 64),
+}
+
 
 def pitch_to_token(midi: int) -> int:
     """Map a MIDI pitch (0..127) to its token id."""
