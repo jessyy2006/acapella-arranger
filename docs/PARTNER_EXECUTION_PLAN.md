@@ -55,7 +55,16 @@ If you have a second Google account, run the 3 ablation trainings in parallel Co
 
 ## Tasks — all due by end of Tuesday night
 
-Nine steps, organised by dependency + parallelisability. Kick off the Colab training runs first (they're wall-clock blockers), code during the training wait, finish with eval + docs.
+Ten steps, organised by dependency + parallelisability. Step 0 is a one-time local data bootstrap. Kick off the Colab training runs first (they're wall-clock blockers), code during the training wait, finish with eval + docs.
+
+- [ ] 🟥 **Step 0: Local data bootstrap (~15 min, one-time)**
+  - [ ] 🟥 Datasets are gitignored (jaCappella has a license, and the processed `.pt` files are regenerable), so you need to build them locally before Steps 5 / 7 can run their CLIs and tests. See `SETUP.md` §4 for the canonical flow — the steps below are the short version.
+  - [ ] 🟥 Confirm env is set up: `conda activate aca-adapt` (or create it per `SETUP.md` §2) and `pip install -r requirements.txt`.
+  - [ ] 🟥 Accept the jaCappella license at https://huggingface.co/datasets/jaCappella/jaCappella (same HF account you'll use for Colab), then `huggingface-cli login` with a read token.
+  - [ ] 🟥 `python scripts/download_data.py` — fetches jaCappella MIDI + materialises JSB Chorales into `data/raw/` (~50 MB, ~5 min).
+  - [ ] 🟥 `python scripts/prepare_data.py` — tokenises + windows + augments into `data/processed/{train,val,test}.pt` (~2–5 min). Pass `--force` if you need to rebuild later.
+  - [ ] 🟥 Verify: `ls data/processed/` shows `train.pt`, `val.pt`, `test.pt`. If anything errors, stop and ping Jess — don't hand-edit the data.
+  - [ ] 🟥 Note: Colab training in Steps 2/4/6 downloads its own copy of the data inside the notebook; this local bootstrap is specifically for eval CLIs + unit tests on your machine.
 
 - [ ] 🟥 **Step 1: Unblock the pipeline (~20 min)**
   - [ ] 🟥 Review PR #7 (https://github.com/jessyy2006/acapella-arranger/pull/7). Skim the 6 commits; focus on `src/training/train.py` (the main loop), `configs/train.yaml`, and `notebooks/03_train.ipynb`.
