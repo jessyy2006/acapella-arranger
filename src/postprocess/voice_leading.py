@@ -248,6 +248,40 @@ def _align_events_to_grid(
     return result
 
 
+def fit_to_length(tokens: list[int], target_sixteenths: int) -> list[int]:
+    """Pad or trim a voice's token stream so its total duration equals
+    exactly ``target_sixteenths`` 16th-notes.
+
+    Preserves SOS / EOS framing if present on the input. Tail events are
+    shortened (and, if needed, dropped) when the stream is too long;
+    a single trailing ``REST`` event is appended when it is too short.
+    Because ``DUR_BUCKETS`` contains ``1``, the serializer can decompose
+    any positive integer sixteenth count into legal buckets — so this
+    helper can land on any ``target_sixteenths >= 0`` exactly.
+    """
+    if target_sixteenths < 0:
+        raise ValueError(f"target_sixteenths must be >= 0, got {target_sixteenths}")
+
+    wrap = bool(tokens) and (tokens[0] == SOS or tokens[-1] == EOS)
+    events = _tokens_to_events(tokens)
+    current = sum(dur for _, dur in events)
+
+    if current > target_sixteenths:
+        # Drop whole events from the tail until we fit within target,
+        # then shorten the new last event to hit the target exactly.
+        while events and current - events[-1][1] >= target_sixteenths:
+            current -= events.pop()[1]
+        if events and current > target_sixteenths:
+            pitch, dur = events[-1]
+            events[-1] = (pitch, dur - (current - target_sixteenths))
+            current = target_sixteenths
+        # All events absorbed (target == 0): leave events empty.
+    elif current < target_sixteenths:
+        events.append((-1, target_sixteenths - current))  # REST tail
+
+    return _events_to_tokens(events, wrap_sos_eos=wrap)
+
+
 def coalesce_voice_tokens(
     tokens: list[int],
     *,

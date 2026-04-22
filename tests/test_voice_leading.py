@@ -21,9 +21,11 @@ from src.data.vocab import (
 from src.data.vocab import DUR_BUCKETS, EOS, SOS, duration_to_token
 from src.postprocess.voice_leading import (
     _align_events_to_grid,
+    _tokens_to_events,
     apply_voice_leading,
     coalesce_voice_tokens,
     detect_parallel_motion,
+    fit_to_length,
 )
 
 
@@ -406,3 +408,80 @@ class TestCoalesceAllVoices:
             assert out[voice] == tokens[voice], (
                 f"{voice} should be unchanged when coalesce is disabled"
             )
+
+
+# ---------------------------------------------------------------------------
+# fit_to_length — exact-duration clamp applied as the final pipeline step.
+# ---------------------------------------------------------------------------
+
+
+def _total_sixteenths(tokens: list[int]) -> int:
+    return sum(dur for _, dur in _tokens_to_events(tokens))
+
+
+class TestFitToLength:
+    def test_exact_match_leaves_duration_unchanged(self):
+        # Two 8th notes = 4 sixteenths total. Asking for 4 must not
+        # append or trim anything; round-tripping through the event
+        # serializer is permitted (BAR / duration-decomposition), so
+        # we assert on summed duration rather than byte-identical.
+        p = pitch_to_token(60)
+        tokens = [SOS, p, duration_to_token(2), p, duration_to_token(2), EOS]
+        out = fit_to_length(tokens, 4)
+        assert _total_sixteenths(out) == 4
+        assert out[0] == SOS and out[-1] == EOS
+
+    def test_pads_short_stream_with_rest(self):
+        # Single 16th; target 16 → pad 15 sixteenths of rest.
+        p = pitch_to_token(60)
+        tokens = [SOS, p, duration_to_token(1), EOS]
+        out = fit_to_length(tokens, 16)
+        assert _total_sixteenths(out) == 16
+        # A REST token must appear in the padded region.
+        assert REST in out
+
+    def test_trims_long_stream_to_target(self):
+        # Four quarter-notes = 16 sixteenths. Target 10 → trim to 10.
+        p = pitch_to_token(60)
+        q = duration_to_token(4)
+        tokens = [SOS, p, q, p, q, p, q, p, q, EOS]
+        out = fit_to_length(tokens, 10)
+        assert _total_sixteenths(out) == 10
+
+    def test_trim_shortens_last_event_instead_of_dropping(self):
+        # One half-note (8 sixteenths). Target 5 → keep the note, shorten
+        # to 5 sixteenths (decomposed as 4 + 1 by the serializer).
+        p = pitch_to_token(60)
+        tokens = [SOS, p, duration_to_token(8), EOS]
+        out = fit_to_length(tokens, 5)
+        assert _total_sixteenths(out) == 5
+        # Every emitted pitch token should still be the original pitch —
+        # trimming must not invent new pitches.
+        for pitch, _ in _tokens_to_events(out):
+            assert pitch == 60
+
+    def test_preserves_framing_when_absent(self):
+        # No SOS/EOS in, no SOS/EOS out.
+        p = pitch_to_token(60)
+        tokens = [p, duration_to_token(2)]
+        out = fit_to_length(tokens, 4)
+        assert SOS not in out and EOS not in out
+        assert _total_sixteenths(out) == 4
+
+    def test_empty_input_pads_to_target(self):
+        # No events at all → single REST of the target length.
+        out = fit_to_length([], 6)
+        assert _total_sixteenths(out) == 6
+        assert REST in out
+
+    def test_zero_target_returns_empty(self):
+        # Target 0: every event must be trimmed away.
+        p = pitch_to_token(60)
+        tokens = [SOS, p, duration_to_token(4), EOS]
+        out = fit_to_length(tokens, 0)
+        assert _total_sixteenths(out) == 0
+
+    def test_negative_target_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            fit_to_length([], -1)
