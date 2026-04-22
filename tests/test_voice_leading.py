@@ -20,6 +20,7 @@ from src.data.vocab import (
 )
 from src.data.vocab import DUR_BUCKETS, EOS, SOS, duration_to_token
 from src.postprocess.voice_leading import (
+    _align_events_to_grid,
     apply_voice_leading,
     coalesce_voice_tokens,
     detect_parallel_motion,
@@ -74,7 +75,14 @@ class TestRangeClamp:
             t=[pitch_to_token(50), DUR_16TH],
             b=[pitch_to_token(40), DUR_16TH],
         )
-        out = apply_voice_leading(tokens)
+        # Disable coalesce + grid alignment — this test is isolating
+        # the range-clamp behaviour on single-token streams.
+        out = apply_voice_leading(
+            tokens,
+            bass_coalesce_min_sixteenths=0,
+            upper_coalesce_min_sixteenths=0,
+            align_grid_sixteenths=0,
+        )
         for v in VOICES:
             assert out[v] == tokens[v]
 
@@ -85,13 +93,14 @@ class TestRangeClamp:
             t=[pitch_to_token(50), DUR_16TH, BAR, REST, DUR_16TH, PAD],
             b=[pitch_to_token(40), DUR_16TH, BAR, REST, DUR_16TH, PAD],
         )
-        # Disable both coalesce paths — this test is isolating the
-        # range-clamp behaviour, and per-voice coalesce would merge the
-        # 16th-note events and rewrite the token stream.
+        # Disable all rewriting passes — this test is isolating the
+        # range-clamp behaviour, and per-voice coalesce / grid-align
+        # would merge the 16th-note events.
         out = apply_voice_leading(
             tokens,
             bass_coalesce_min_sixteenths=0,
             upper_coalesce_min_sixteenths=0,
+            align_grid_sixteenths=0,
         )
         for v in VOICES:
             # Non-pitch tokens unchanged at the same positions.
@@ -200,13 +209,14 @@ class TestParallelDetection:
             b=[pitch_to_token(40), DUR_16TH, pitch_to_token(40), DUR_16TH],
         )
         with caplog.at_level(logging.WARNING, logger="src.postprocess.voice_leading"):
-            # Disable coalesce — the 16th-note pairs this test uses
-            # would otherwise collapse into single notes and there'd
+            # Disable coalesce + grid-align — the 16th-note pairs this
+            # test uses would otherwise get merged or snapped and there'd
             # be no moving voices to detect parallels between.
             apply_voice_leading(
                 tokens,
                 bass_coalesce_min_sixteenths=0,
                 upper_coalesce_min_sixteenths=0,
+                align_grid_sixteenths=0,
             )
         assert any("parallel fifth" in rec.message for rec in caplog.records)
 
@@ -345,6 +355,36 @@ class TestCoalesceAllVoices:
                 f"{voice}: expected 1 unique pitch, got {pitches} in {out[voice]}"
             )
 
+    def test_grid_align_aligns_event_ends_across_voices(self):
+        # Two "voices" with different durations — after grid-snap to an
+        # 8th-note grid (sixteenths=2) their cumulative event ends must
+        # land on the same grid positions.
+        s_events = [(60, 3), (62, 3), (64, 3)]   # ends at 3, 6, 9
+        t_events = [(50, 5), (52, 5)]            # ends at 5, 10
+        grid = 2
+        s_aligned = _align_events_to_grid(s_events, grid)
+        t_aligned = _align_events_to_grid(t_events, grid)
+
+        def cumulative_ends(events):
+            pos = 0
+            out = []
+            for _, d in events:
+                pos += d
+                out.append(pos)
+            return out
+
+        s_ends = cumulative_ends(s_aligned)
+        t_ends = cumulative_ends(t_aligned)
+        for e in s_ends + t_ends:
+            assert e % grid == 0, f"end {e} not on grid {grid}"
+
+    def test_grid_align_never_shrinks_event_to_zero(self):
+        # A single 16th-note event on a quarter grid would round its end
+        # to 0 if naïvely done; we must guarantee at least one quantum.
+        events = [(60, 1)]
+        aligned = _align_events_to_grid(events, grid_sixteenths=4)
+        assert aligned[0][1] >= 4, aligned
+
     def test_coalesce_can_be_disabled_per_kind(self):
         # Raw 16th-note stream; disabling both coalesce paths should
         # leave the S/A/T and bass outputs alone (aside from identity
@@ -360,6 +400,7 @@ class TestCoalesceAllVoices:
             tokens,
             bass_coalesce_min_sixteenths=0,
             upper_coalesce_min_sixteenths=0,
+            align_grid_sixteenths=0,
         )
         for voice in ("s", "a", "t", "b"):
             assert out[voice] == tokens[voice], (

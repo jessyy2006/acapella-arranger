@@ -220,8 +220,39 @@ def _absorb_short_events(
     return events
 
 
+def _align_events_to_grid(
+    events: list[tuple[int, int]], grid_sixteenths: int
+) -> list[tuple[int, int]]:
+    """Round each event's cumulative end position to the nearest grid
+    boundary. Since every voice uses the same grid, their event
+    boundaries align across voices — which is what produces audible
+    collective pauses in the stitched arrangement (issue 004).
+
+    Event lengths are clamped to a minimum of ``grid_sixteenths`` so a
+    short original event never shrinks to zero.
+    """
+    if grid_sixteenths < 2 or not events:
+        return list(events)
+    result: list[tuple[int, int]] = []
+    pos = 0
+    for pitch, dur in events:
+        next_pos = pos + dur
+        # Round-to-nearest; when half-way, round up (grid // 2 bias).
+        quantized_next = (
+            (next_pos + grid_sixteenths // 2) // grid_sixteenths
+        ) * grid_sixteenths
+        if quantized_next <= pos:
+            quantized_next = pos + grid_sixteenths
+        result.append((pitch, quantized_next - pos))
+        pos = quantized_next
+    return result
+
+
 def coalesce_voice_tokens(
-    tokens: list[int], *, min_sixteenths: int = 4
+    tokens: list[int],
+    *,
+    min_sixteenths: int = 4,
+    align_grid_sixteenths: int = 0,
 ) -> list[int]:
     """Merge same-pitch neighbours and absorb too-short events in a voice
     token stream. Intended mostly for bass (issue 002): pop bass should
@@ -235,6 +266,11 @@ def coalesce_voice_tokens(
     events = _coalesce_same_pitch(events)
     events = _absorb_short_events(events, min_sixteenths)
     events = _coalesce_same_pitch(events)
+    if align_grid_sixteenths >= 2:
+        events = _align_events_to_grid(events, align_grid_sixteenths)
+        # Grid rounding can create identical-pitch neighbours; coalesce
+        # once more so the re-emit produces the longer merged event.
+        events = _coalesce_same_pitch(events)
     return _events_to_tokens(events, wrap_sos_eos=wrap)
 
 
@@ -245,6 +281,7 @@ def apply_voice_leading(
     enable_parallel_detect: bool = True,
     bass_coalesce_min_sixteenths: int = 3,
     upper_coalesce_min_sixteenths: int = 2,
+    align_grid_sixteenths: int = 2,
 ) -> dict[str, list[int]]:
     """Post-process per-voice token sequences before MIDI export.
 
@@ -270,6 +307,13 @@ def apply_voice_leading(
         Same coalesce applied to S/A/T. Default 2 (an 8th note) is
         looser than the bass floor so upper voices keep more rhythmic
         motion while still dropping stochastic 16ths. Set to 0 to
+        disable. See ``docs/issues/004``.
+    align_grid_sixteenths
+        Round every voice's event-end positions to the nearest
+        multiple of this many sixteenths. Because all four voices
+        share the grid, their onsets coincide — collective pauses
+        appear wherever the grid rounds multiple voices' events to
+        the same boundary. Default 2 (8th-note grid). Set to 0 to
         disable. See ``docs/issues/004``.
 
     Returns
@@ -299,14 +343,18 @@ def apply_voice_leading(
         "b": bass_coalesce_min_sixteenths,
     }
     for voice, min_sx in coalesce_floors.items():
-        if min_sx > 0 and voice in out:
+        if voice not in out:
+            continue
+        if min_sx > 0 or align_grid_sixteenths >= 2:
             before = len(out[voice])
             out[voice] = coalesce_voice_tokens(
-                out[voice], min_sixteenths=min_sx
+                out[voice],
+                min_sixteenths=min_sx,
+                align_grid_sixteenths=align_grid_sixteenths,
             )
             logger.info(
-                "%s coalesce: %d -> %d tokens (min_sixteenths=%d)",
-                voice, before, len(out[voice]), min_sx,
+                "%s coalesce: %d -> %d tokens (min_sixteenths=%d, grid=%d)",
+                voice, before, len(out[voice]), min_sx, align_grid_sixteenths,
             )
 
     if enable_parallel_detect:
