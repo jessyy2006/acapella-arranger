@@ -243,7 +243,7 @@ def apply_voice_leading(
     *,
     enable_range_clamp: bool = True,
     enable_parallel_detect: bool = True,
-    bass_coalesce_min_sixteenths: int = 4,
+    bass_coalesce_min_sixteenths: int = 3,
 ) -> dict[str, list[int]]:
     """Post-process per-voice token sequences before MIDI export.
 
