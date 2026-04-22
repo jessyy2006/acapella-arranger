@@ -36,6 +36,26 @@ from src.postprocess.voice_leading import apply_voice_leading
 logger = logging.getLogger(__name__)
 
 
+def _assemble_score(
+    lead_tokens: list[int], generated: dict[str, list[int]]
+) -> stream.Score:
+    """Stack Lead + S/A/T/B into one Score with Lead on the top staff.
+
+    Split out so tests can assert on the part structure in-memory —
+    music21's MIDI writer does not preserve ``partName`` on round-trip,
+    so file-level assertions cannot check staff order.
+    """
+    score = stream.Score()
+    lead_part = decode_part(lead_tokens)
+    lead_part.partName = "LEAD"
+    score.insert(0, lead_part)
+    for voice in VOICES:
+        part = decode_part(generated[voice])
+        part.partName = voice.upper()
+        score.insert(0, part)
+    return score
+
+
 def _load_model(
     checkpoint_path: Path, model_class: str, device: torch.device
 ) -> torch.nn.Module:
@@ -107,11 +127,7 @@ def run_pipeline(
             generated, enable_range_clamp=True, enable_parallel_detect=True
         )
 
-    score = stream.Score()
-    for voice in VOICES:
-        part = decode_part(generated[voice])
-        part.partName = voice.upper()
-        score.insert(0, part)
+    score = _assemble_score(lead_tokens, generated)
 
     if out_path is None:
         out_path = audio_path.with_name(f"{audio_path.stem}_arrangement.mid")
