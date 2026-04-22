@@ -21,6 +21,7 @@ from src.pipeline.audio_to_midi import (
     _bridge_short_rest_gaps,
     _detect_scale_pitch_classes,
     _merge_short_runs,
+    _pull_low_confidence_frames,
     _snap_to_scale,
     extract_lead_tokens,
     frames_to_part,
@@ -183,6 +184,38 @@ class TestAmplitudeGate:
         )
         notes = list(part.recurse().notes)
         assert len(notes) >= 1, "confident pitch with no amplitude gate must emit a note"
+
+
+class TestPullLowConfidenceFrames:
+    """Cover the confidence-weighted mode smoother added for issue 001."""
+
+    def test_low_confidence_frame_pulls_toward_dominant_neighbor(self):
+        # A run of MIDI 72 with high confidence, one flicker to 74 with low confidence.
+        # The flicker should snap back to 72 (the weighted mode of its window).
+        midi = np.array([72, 72, 72, 72, 74, 72, 72, 72, 72], dtype=np.int32)
+        conf = np.array([0.9, 0.9, 0.9, 0.9, 0.2, 0.9, 0.9, 0.9, 0.9], dtype=np.float32)
+        out = _pull_low_confidence_frames(
+            midi, conf, window=5, low_conf_threshold=0.5,
+        )
+        assert out[4] == 72, out.tolist()
+
+    def test_high_confidence_frames_left_alone(self):
+        # A genuine pitch change with high confidence — smoother must not flatten it.
+        midi = np.array([72, 72, 72, 74, 74, 74], dtype=np.int32)
+        conf = np.full(6, 0.9, dtype=np.float32)
+        out = _pull_low_confidence_frames(
+            midi, conf, window=5, low_conf_threshold=0.5,
+        )
+        assert (out == midi).all()
+
+    def test_rest_sentinels_unchanged(self):
+        midi = np.array([72, 72, -1, -1, -1, 72, 72], dtype=np.int32)
+        conf = np.array([0.9, 0.9, 0.1, 0.1, 0.1, 0.9, 0.9], dtype=np.float32)
+        out = _pull_low_confidence_frames(
+            midi, conf, window=5, low_conf_threshold=0.5,
+        )
+        # REST frames must stay REST (we're correcting pitch uncertainty only).
+        assert (out[2:5] == -1).all(), out.tolist()
 
 
 class TestBridgeShortRestGaps:

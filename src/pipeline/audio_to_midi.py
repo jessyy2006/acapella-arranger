@@ -239,6 +239,48 @@ def _hz_to_midi_int(pitch_hz: np.ndarray) -> np.ndarray:
     return midi.astype(np.int32)
 
 
+def _pull_low_confidence_frames(
+    midi_frames: np.ndarray,
+    confidence: np.ndarray,
+    *,
+    window: int,
+    low_conf_threshold: float,
+) -> np.ndarray:
+    """Replace low-confidence pitch frames with the confidence-weighted
+    mode of their window.
+
+    Addresses the "held high note jumping between neighbouring MIDI
+    values" symptom: when CREPE is uncertain about a pitch (high notes,
+    soft dynamics, instrumental bleed), its frame output wobbles
+    between candidate values even though the singer is holding one
+    stable note. Taking the weighted-mode of the window pulls those
+    uncertain frames toward the dominant confident pitch nearby.
+
+    Only touches frames where ``confidence < low_conf_threshold`` *and*
+    the frame is a pitch (not already a REST sentinel). High-confidence
+    frames are left alone so we don't flatten real melodic motion.
+    """
+    if window < 3 or low_conf_threshold <= 0 or len(midi_frames) == 0:
+        return midi_frames
+    n = len(midi_frames)
+    out = midi_frames.copy()
+    half = window // 2
+    for i in range(n):
+        if out[i] < 0 or confidence[i] >= low_conf_threshold:
+            continue
+        start = max(0, i - half)
+        end = min(n, i + half + 1)
+        accumulator: dict[int, float] = {}
+        for v, w in zip(midi_frames[start:end], confidence[start:end]):
+            iv = int(v)
+            if iv < 0:
+                continue  # skip REST sentinels — we're correcting pitch, not voicing
+            accumulator[iv] = accumulator.get(iv, 0.0) + float(w)
+        if accumulator:
+            out[i] = max(accumulator.items(), key=lambda kv: kv[1])[0]
+    return out
+
+
 def _bridge_short_rest_gaps(midi_frames: np.ndarray, max_gap: int) -> np.ndarray:
     """Fill REST (-1) stretches of length <= ``max_gap`` when bounded on
     both sides by the *same* non-rest pitch.
@@ -424,6 +466,8 @@ def frames_to_part(
     amplitude_relative_db: float = 26.0,
     smoothing_window: int = 5,
     pitch_smoothing_window: int = 21,
+    conf_smooth_threshold: float = 0.7,
+    conf_smooth_window: int = 21,
     rest_bridge_frames: int = 6,
     min_merge_frames: int = 8,
     enable_key_snap: bool = True,
@@ -445,9 +489,14 @@ def frames_to_part(
        only way to catch reverb/bleed in pauses without also washing
        out soft high notes in the main material.
     3. **Wide median filter on MIDI integers** (``pitch_smoothing_window``,
-       default ~150 ms): kills semitone-boundary flicker that makes
+       default ~210 ms): kills semitone-boundary flicker that makes
        scoops read as flats/sharps and subsumes 1-2 frame REST blips
        into surrounding pitches.
+    3b. **Confidence-weighted pull for uncertain frames**
+       (``conf_smooth_*``): any frame whose CREPE confidence is below
+       ``conf_smooth_threshold`` is replaced with the confidence-
+       weighted mode of its window. Stabilises held high notes that
+       CREPE keeps flickering between neighbouring MIDI values.
     4. **Explicit REST bridging** (``rest_bridge_frames``): REST gaps up
        to N frames bounded by the same pitch on both sides are filled
        with that pitch. Fixes longer confidence dips inside held notes
@@ -505,6 +554,18 @@ def frames_to_part(
         )
         midi_frames = medfilt(midi_frames.astype(np.float32), kernel_size=win).astype(
             np.int32
+        )
+
+    # Pull uncertain pitch frames toward their confident neighbours —
+    # targets "held high note jumping between MIDI values" where CREPE
+    # is wobbling even though the singer is stable.
+    if conf_smooth_threshold > 0 and conf_smooth_window >= 3:
+        win_c = (
+            conf_smooth_window if conf_smooth_window % 2 else conf_smooth_window + 1
+        )
+        midi_frames = _pull_low_confidence_frames(
+            midi_frames, confidence,
+            window=win_c, low_conf_threshold=conf_smooth_threshold,
         )
 
     midi_frames = _bridge_short_rest_gaps(midi_frames, rest_bridge_frames)
