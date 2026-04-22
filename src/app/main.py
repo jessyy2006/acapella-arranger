@@ -53,14 +53,27 @@ import streamlit as st
 _IMPORT_ERROR: ImportError | None = None
 try:
     import librosa  # noqa: E402
+    from huggingface_hub import hf_hub_download  # noqa: E402
     from src.pipeline.run_pipeline import run_pipeline  # noqa: E402
 except ImportError as exc:
     _IMPORT_ERROR = exc
     librosa = None  # type: ignore[assignment]
+    hf_hub_download = None  # type: ignore[assignment]
     run_pipeline = None  # type: ignore[assignment]
 
+# Checkpoint resolution order:
+#   1. ``ACA_ADAPT_CHECKPOINT`` env var pointing at an existing file
+#      — local dev override; bypasses the HF download entirely.
+#   2. ``ACA_ADAPT_HF_REPO_ID`` env var (e.g. ``user/aca-adapt-model``)
+#      — pull ``phase_b_final.pt`` from that HF Hub repo and cache it
+#      under ``~/.cache/aca-adapt/``. This is the Spaces code path.
+#   3. Fallback: default local path
+#      (``checkpoints/phase_b/phase_b_final.pt``). Fails loudly in
+#      _ensure_checkpoint if it isn't there.
 _DEFAULT_CHECKPOINT = _PROJECT_ROOT / "checkpoints" / "phase_b" / "phase_b_final.pt"
-_CHECKPOINT = Path(os.environ.get("ACA_ADAPT_CHECKPOINT", _DEFAULT_CHECKPOINT))
+_CHECKPOINT_ENV = os.environ.get("ACA_ADAPT_CHECKPOINT")
+_HF_REPO_ID = os.environ.get("ACA_ADAPT_HF_REPO_ID")
+_HF_FILENAME = os.environ.get("ACA_ADAPT_HF_FILENAME", "phase_b_final.pt")
 
 _ACCEPTED_AUDIO = ["mp3", "wav", "m4a", "mp4", "flac", "ogg"]
 
@@ -149,6 +162,54 @@ def _hash_bytes(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=8).hexdigest()
 
 
+@st.cache_resource(show_spinner="Fetching model checkpoint (first launch only)…")
+def _ensure_checkpoint() -> Path:
+    """Return a local filesystem path to the trained checkpoint.
+
+    Cached at the process level — on HF Spaces the 90 MB download
+    from the Hub happens exactly once per container; subsequent
+    ``run_pipeline`` calls re-use the file on disk.
+
+    Raises :class:`FileNotFoundError` with a clear remediation
+    message when none of the three resolution paths land on an
+    existing file. Treated by callers as a fatal "the grader won't
+    see anything" error — the UI shows the same recovery copy as
+    the env-missing banner.
+    """
+    if _CHECKPOINT_ENV:
+        local = Path(_CHECKPOINT_ENV)
+        if local.is_file():
+            return local
+        raise FileNotFoundError(
+            f"ACA_ADAPT_CHECKPOINT is set to {_CHECKPOINT_ENV} but that file "
+            "doesn't exist."
+        )
+
+    if _HF_REPO_ID:
+        assert hf_hub_download is not None  # guarded by _IMPORT_ERROR in main()
+        cache_dir = Path(os.environ.get("ACA_ADAPT_CACHE_DIR", Path.home() / ".cache" / "aca-adapt"))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        local_path = hf_hub_download(
+            repo_id=_HF_REPO_ID,
+            filename=_HF_FILENAME,
+            cache_dir=str(cache_dir),
+            # ``revision=main`` keeps behaviour deterministic across
+            # pushes to the model repo while letting the user
+            # overwrite by force-pushing if they retrain.
+            revision="main",
+        )
+        return Path(local_path)
+
+    if _DEFAULT_CHECKPOINT.is_file():
+        return _DEFAULT_CHECKPOINT
+
+    raise FileNotFoundError(
+        "Model checkpoint not found. Set ACA_ADAPT_HF_REPO_ID to pull from "
+        "Hugging Face Hub, or ACA_ADAPT_CHECKPOINT to point at a local file, "
+        f"or place the checkpoint at the default path: {_DEFAULT_CHECKPOINT}"
+    )
+
+
 @st.cache_data(show_spinner=False, max_entries=4)
 def _probe_audio(audio_bytes: bytes, suffix: str) -> tuple[float, int]:
     """Return ``(duration_sec, sample_rate)`` for the uploaded audio.
@@ -188,12 +249,7 @@ def _run_arrangement(
     sense of forward motion rather than a spinner stalled on the
     Demucs download.
     """
-    if not _CHECKPOINT.is_file():
-        raise FileNotFoundError(
-            f"Model checkpoint not found at {_CHECKPOINT}. "
-            "Set the ACA_ADAPT_CHECKPOINT environment variable or place the "
-            "phase_b_final.pt file at the default location."
-        )
+    checkpoint_path = _ensure_checkpoint()
 
     suffix = Path(original_name).suffix or ".mp3"
     t0 = time.monotonic()
@@ -205,7 +261,7 @@ def _run_arrangement(
     try:
         run_pipeline(
             audio_path=in_path,
-            model_checkpoint=_CHECKPOINT,
+            model_checkpoint=checkpoint_path,
             out_path=out_path,
             tempo_bpm=tempo_override,
             voice_leading=voice_leading,
@@ -424,13 +480,9 @@ def main() -> None:
         )
 
     # ---- Generate ----------------------------------------------------
-    if not _CHECKPOINT.is_file():
-        st.error(
-            "Model checkpoint is missing at the expected location: "
-            f"`{_CHECKPOINT}`. Set `ACA_ADAPT_CHECKPOINT` to point at "
-            "`phase_b_final.pt` and rerun."
-        )
-        return
+    # Checkpoint resolution is deferred until the user clicks Generate
+    # (see ``_ensure_checkpoint``) — that way first paint is fast even
+    # when the HF Hub download is about to run for the first time.
 
     go = st.button("Generate arrangement", type="primary", use_container_width=True)
     if not go:

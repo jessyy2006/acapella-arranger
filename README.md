@@ -1,3 +1,14 @@
+---
+title: Aca-Adapt
+emoji: 🎼
+colorFrom: indigo
+colorTo: purple
+sdk: streamlit
+sdk_version: 1.56.0
+app_file: src/app/main.py
+pinned: false
+---
+
 # Aca-Adapt
 
 Convert any song into an editable four-part SATB (Soprano, Alto, Tenor, Bass) a cappella arrangement. Upload an audio file and download a MIDI or MusicXML score that opens in any notation software for further editing.
