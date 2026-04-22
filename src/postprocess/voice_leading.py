@@ -29,9 +29,14 @@ from typing import Final
 
 from src.data.vocab import (
     BAR,
+    DUR_BUCKETS,
+    EOS,
     PAD,
     REST,
     SATB_RANGES,
+    SOS,
+    duration_to_token,
+    is_duration_token,
     is_pitch_token,
     pitch_to_token,
     token_to_duration,
@@ -86,11 +91,159 @@ def _clamp_tokens(tokens: list[int], lo: int, hi: int) -> list[int]:
     return out
 
 
+def _tokens_to_events(tokens: list[int]) -> list[tuple[int, int]]:
+    """Parse a voice's token stream into ``[(pitch_or_-1, sixteenths), ...]``.
+
+    Drops SOS / EOS / BAR / PAD — BARs get regenerated from the summed
+    sixteenth count when we re-emit. ``pitch == -1`` denotes REST.
+    Malformed pitch-without-duration fragments are skipped.
+    """
+    events: list[tuple[int, int]] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t == EOS:
+            break
+        if t in (SOS, BAR, PAD):
+            i += 1
+            continue
+        if is_pitch_token(t) or t == REST:
+            if i + 1 >= len(tokens) or not is_duration_token(tokens[i + 1]):
+                i += 1
+                continue  # malformed pair — skip
+            if t == REST:
+                pitch_val = -1
+            else:
+                pval = token_to_pitch(t)
+                if pval is None:
+                    i += 1
+                    continue
+                pitch_val = int(pval)
+            dur = token_to_duration(tokens[i + 1])
+            if dur is None or dur <= 0:
+                i += 2
+                continue
+            events.append((pitch_val, int(dur)))
+            i += 2
+            continue
+        i += 1
+    return events
+
+
+def _events_to_tokens(
+    events: list[tuple[int, int]], *, wrap_sos_eos: bool
+) -> list[int]:
+    """Serialise ``[(pitch, sixteenths), ...]`` back to the token vocab.
+
+    Emits a ``BAR`` token just before the first event of each new
+    measure (except the first measure) rather than immediately after a
+    completed measure — avoids a spurious trailing ``BAR``. Events that
+    straddle bar lines are split into legal duration buckets
+    (``DUR_BUCKETS`` tops out at 16 sixteenths).
+    """
+    out: list[int] = []
+    if wrap_sos_eos:
+        out.append(SOS)
+    measure_pos = 0  # sixteenths elapsed in the current measure, [0, 16)
+    bar_pending = False  # set when a measure just completed; emit BAR before next event
+    for pitch, sixteenths in events:
+        remaining = sixteenths
+        while remaining > 0:
+            if bar_pending:
+                out.append(BAR)
+                bar_pending = False
+            room = 16 - measure_pos
+            chunk_target = min(remaining, room)
+            legal = [b for b in DUR_BUCKETS if b <= chunk_target]
+            if not legal:
+                break  # chunk_target < 1 shouldn't happen after coalesce
+            chunk = max(legal)
+            out.append(pitch_to_token(pitch) if pitch >= 0 else REST)
+            out.append(duration_to_token(chunk))
+            measure_pos += chunk
+            remaining -= chunk
+            if measure_pos >= 16:
+                measure_pos = 0
+                bar_pending = True
+    if wrap_sos_eos:
+        out.append(EOS)
+    return out
+
+
+def _coalesce_same_pitch(events: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge adjacent events with identical pitch into one (sum durations)."""
+    merged: list[tuple[int, int]] = []
+    for pitch, dur in events:
+        if merged and merged[-1][0] == pitch:
+            merged[-1] = (pitch, merged[-1][1] + dur)
+        else:
+            merged.append((pitch, dur))
+    return merged
+
+
+def _absorb_short_events(
+    events: list[tuple[int, int]], min_sixteenths: int
+) -> list[tuple[int, int]]:
+    """Merge any event shorter than ``min_sixteenths`` into its longer
+    neighbour (tiebreak: previous). Iterates to fixed point.
+    """
+    if min_sixteenths < 2 or len(events) < 2:
+        return list(events)
+    events = list(events)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(events)):
+            pitch, dur = events[i]
+            if dur >= min_sixteenths:
+                continue
+            if len(events) <= 1:
+                break
+            if i == 0:
+                nxt_p, nxt_d = events[1]
+                events[0] = (nxt_p, dur + nxt_d)
+                events.pop(1)
+            elif i == len(events) - 1:
+                prv_p, prv_d = events[-2]
+                events[-2] = (prv_p, prv_d + dur)
+                events.pop()
+            else:
+                prv_p, prv_d = events[i - 1]
+                nxt_p, nxt_d = events[i + 1]
+                if prv_d >= nxt_d:
+                    events[i - 1] = (prv_p, prv_d + dur)
+                else:
+                    events[i + 1] = (nxt_p, dur + nxt_d)
+                events.pop(i)
+            changed = True
+            break
+    return events
+
+
+def coalesce_voice_tokens(
+    tokens: list[int], *, min_sixteenths: int = 4
+) -> list[int]:
+    """Merge same-pitch neighbours and absorb too-short events in a voice
+    token stream. Intended mostly for bass (issue 002): pop bass should
+    be held root notes, but the model — trained on JSB + jacappella —
+    generates restless 16th-note motion even at low duration temperature.
+    """
+    events = _tokens_to_events(tokens)
+    if not events:
+        return list(tokens)
+    wrap = bool(tokens) and (SOS in tokens[:1] or EOS in tokens[-1:])
+    events = _coalesce_same_pitch(events)
+    events = _absorb_short_events(events, min_sixteenths)
+    events = _coalesce_same_pitch(events)
+    return _events_to_tokens(events, wrap_sos_eos=wrap)
+
+
 def apply_voice_leading(
     tokens_by_voice: dict[str, list[int]],
     *,
     enable_range_clamp: bool = True,
     enable_parallel_detect: bool = True,
+    bass_coalesce_min_sixteenths: int = 4,
 ) -> dict[str, list[int]]:
     """Post-process per-voice token sequences before MIDI export.
 
@@ -108,6 +261,11 @@ def apply_voice_leading(
         at WARNING level. No automatic correction — callers that want the
         structured list should call :func:`detect_parallel_motion`
         directly.
+    bass_coalesce_min_sixteenths
+        Absorb any bass note shorter than this many sixteenths into its
+        longer neighbour, after merging adjacent same-pitch bass notes.
+        Default 4 (a quarter note) targets pop-bass conventions. Set to
+        0 to disable the coalesce and keep the raw model output.
 
     Returns
     -------
@@ -125,6 +283,16 @@ def apply_voice_leading(
         for voice in VOICES:
             lo, hi = SATB_RANGES[voice]
             out[voice] = _clamp_tokens(out[voice], lo, hi)
+
+    if bass_coalesce_min_sixteenths > 0 and "b" in out:
+        before = len(out["b"])
+        out["b"] = coalesce_voice_tokens(
+            out["b"], min_sixteenths=bass_coalesce_min_sixteenths
+        )
+        logger.info(
+            "bass coalesce: %d -> %d tokens (min_sixteenths=%d)",
+            before, len(out["b"]), bass_coalesce_min_sixteenths,
+        )
 
     if enable_parallel_detect:
         violations = detect_parallel_motion(out)

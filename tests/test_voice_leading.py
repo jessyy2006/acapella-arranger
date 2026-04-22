@@ -18,8 +18,10 @@ from src.data.vocab import (
     pitch_to_token,
     token_to_pitch,
 )
+from src.data.vocab import DUR_BUCKETS, EOS, SOS, duration_to_token
 from src.postprocess.voice_leading import (
     apply_voice_leading,
+    coalesce_voice_tokens,
     detect_parallel_motion,
 )
 
@@ -83,7 +85,10 @@ class TestRangeClamp:
             t=[pitch_to_token(50), DUR_16TH, BAR, REST, DUR_16TH, PAD],
             b=[pitch_to_token(40), DUR_16TH, BAR, REST, DUR_16TH, PAD],
         )
-        out = apply_voice_leading(tokens)
+        # Disable the bass coalesce — this test is isolating the range-
+        # clamp behaviour, and coalesce would merge the 16th-note events
+        # and rewrite the token stream.
+        out = apply_voice_leading(tokens, bass_coalesce_min_sixteenths=0)
         for v in VOICES:
             # Non-pitch tokens unchanged at the same positions.
             assert out[v][1] == DUR_16TH
@@ -218,3 +223,53 @@ class TestValidation:
 
         with pytest.raises(ValueError, match="expected voices"):
             apply_voice_leading(tokens)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Bass coalesce (issue 002)
+# ---------------------------------------------------------------------------
+
+
+def _dur(sixteenths: int) -> int:
+    """Shortcut for a duration token at ``sixteenths`` (must be a bucket)."""
+    assert sixteenths in DUR_BUCKETS, f"{sixteenths} not in DUR_BUCKETS {DUR_BUCKETS}"
+    return duration_to_token(sixteenths)
+
+
+class TestCoalesceVoiceTokens:
+    def test_merges_adjacent_same_pitch_notes(self):
+        # Two adjacent MIDI 43 quarter notes -> one half note.
+        p = pitch_to_token(43)
+        tokens = [SOS, p, _dur(4), p, _dur(4), EOS]
+        out = coalesce_voice_tokens(tokens, min_sixteenths=1)
+        # Re-decode: only one pitch event, totalling 8 sixteenths.
+        assert out.count(p) == 1, out
+        assert _dur(8) in out, out
+
+    def test_absorbs_short_note_into_longer_neighbor(self):
+        # 16th-note blip between two quarter-note neighbours — should vanish.
+        p43 = pitch_to_token(43)
+        p45 = pitch_to_token(45)
+        tokens = [SOS, p43, _dur(4), p45, _dur(1), p43, _dur(4), EOS]
+        out = coalesce_voice_tokens(tokens, min_sixteenths=4)
+        # The p45 blip should have been absorbed and the two p43 neighbours
+        # coalesced — expect a single p43 note of 9 sixteenths.
+        assert p45 not in out, f"short blip should be gone; got {out}"
+
+    def test_regenerates_bar_tokens_at_measure_boundaries(self):
+        # Two whole notes (16 sixteenths each) — should produce exactly
+        # one BAR token between them (both end at a measure boundary).
+        p = pitch_to_token(43)
+        tokens = [SOS, p, _dur(16), p, _dur(16), EOS]
+        out = coalesce_voice_tokens(tokens, min_sixteenths=1)
+        # Same-pitch merge gives one 32-sixteenth event, which splits into
+        # two 16-sixteenth emissions across a bar line.
+        assert out.count(BAR) == 1, out
+
+    def test_does_not_mangle_rests(self):
+        from src.data.vocab import REST
+        p = pitch_to_token(43)
+        tokens = [SOS, p, _dur(4), REST, _dur(4), p, _dur(4), EOS]
+        out = coalesce_voice_tokens(tokens, min_sixteenths=1)
+        # Rest must survive — same-pitch coalesce doesn't merge rest with note.
+        assert REST in out, out
