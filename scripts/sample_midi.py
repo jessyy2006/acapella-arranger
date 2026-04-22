@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.loaders import load_dataset
 from src.data.tokenizer import decode_part
-from src.data.vocab import EOS, PAD, SOS
+from src.data.vocab import EOS, PAD, REST, SOS, is_pitch_token
 from src.eval.evaluate import _build_model, _load_hparams_from_sources, _resolve_device
 from src.postprocess.voice_leading import apply_voice_leading
 
@@ -50,19 +50,25 @@ def _generate_voice(
     device: torch.device,
     *,
     temperature: float = 0.0,
+    duration_temperature: float | None = None,
     top_k: int | None = None,
 ) -> list[int]:
     """Autoregressive decode of a single voice conditioned on ``lead``.
 
-    We forward the full batch each step (O(L^2) but fine for ~200 tokens).
-    ``temperature=0.0`` is greedy (argmax); positive values enable
-    stochastic sampling from the (temperature-scaled) logits. ``top_k``
-    optionally restricts sampling to the top-k most likely tokens to
-    keep outputs on-distribution. Generation stops at EOS, PAD, or
-    ``max_len`` tokens.
+    Forwards the full batch each step (O(L^2) but fine for ~200 tokens).
+    ``temperature=0.0`` is greedy (argmax); positive values sample from
+    the (temperature-scaled) logits. ``duration_temperature`` (if given)
+    overrides ``temperature`` when the *previous* emitted token was a
+    pitch or REST — those positions are where the tokenizer grammar
+    expects a duration next, and a higher duration temperature
+    encourages the model to explore longer notes instead of collapsing
+    on the modal quarter-note bucket. ``top_k`` clips to the top-k most
+    likely tokens to keep samples on-distribution. Generation stops at
+    EOS, PAD, or ``max_len`` tokens.
     """
     tokens: list[int] = [SOS]
     generator = torch.Generator(device="cpu").manual_seed(0)
+    dur_temp = duration_temperature if duration_temperature is not None else temperature
 
     for _ in range(max_len):
         current = torch.tensor([tokens], dtype=torch.long, device=device)
@@ -76,10 +82,18 @@ def _generate_voice(
 
         logits = model(batch)[voice][0, -1, :]  # (V,)
 
-        if temperature <= 0.0:
+        # Pick the temperature based on what position this is. The grammar
+        # alternates (pitch|REST, duration). If the last emitted token was
+        # a pitch or REST, the next one *should* be a duration — bump the
+        # temperature there so durations vary instead of collapsing.
+        prev_tok = tokens[-1]
+        expecting_duration = is_pitch_token(prev_tok) or prev_tok == REST
+        effective_temp = dur_temp if expecting_duration else temperature
+
+        if effective_temp <= 0.0:
             next_tok = int(logits.argmax(dim=-1).item())
         else:
-            scaled = logits / temperature
+            scaled = logits / effective_temp
             if top_k is not None and top_k > 0:
                 kth = torch.topk(scaled, k=top_k).values[-1]
                 scaled = torch.where(
@@ -115,7 +129,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model-class", choices=("hybrid", "baseline"), default="hybrid")
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--temperature", type=float, default=0.0,
-                   help="0.0 = greedy, >0 = stochastic sampling. Try 0.8-1.0.")
+                   help="0.0 = greedy, >0 = stochastic sampling. Try 0.7-0.9.")
+    p.add_argument("--duration-temperature", type=float, default=None,
+                   help="Temperature override for duration-token positions. "
+                        "Raise this above --temperature (try 1.2-1.4) to get more "
+                        "variation in note length — otherwise the model collapses "
+                        "on the modal quarter-note bucket.")
     p.add_argument("--top-k", type=int, default=None,
                    help="Restrict sampling to top-k tokens; 0 or None disables.")
     p.add_argument("--suffix", type=str, default="",
@@ -154,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     for voice in _VOICES:
         generated[voice] = _generate_voice(
             model, lead, voice, args.max_len, device,
-            temperature=args.temperature, top_k=args.top_k,
+            temperature=args.temperature,
+            duration_temperature=args.duration_temperature,
+            top_k=args.top_k,
         )
         logger.info("voice %s: generated %d tokens", voice, len(generated[voice]))
 
