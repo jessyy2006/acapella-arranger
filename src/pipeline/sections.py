@@ -42,8 +42,11 @@ logger = logging.getLogger(__name__)
 
 # Segmentation defaults. Shorter-than-min clips collapse to one section;
 # longer clips get split into up to ``_MAX_SEGMENTS`` and clustered into
-# at most ``_MAX_LABELS`` labels.
-_MIN_SECTION_SEC: Final[float] = 2.0
+# at most ``_MAX_LABELS`` labels. The minimum section length is set to
+# 10 s so patterns hold long enough to read as "verse / chorus" rather
+# than as two-bar ornaments — a shorter floor produced sectional labels
+# that flipped every few bars on the smoke clip.
+_MIN_SECTION_SEC: Final[float] = 10.0
 _MAX_SEGMENTS: Final[int] = 12
 _MAX_LABELS: Final[int] = 5
 
@@ -142,8 +145,15 @@ def detect_sections(
             seg_features.append(mfcc[:, sf:ef].mean(axis=1))
         feats = np.stack(seg_features, axis=0)
 
-        n_clusters = min(max_labels, len(segments))
-        if n_clusters < 2:
+        # Aim for roughly half as many labels as segments so at least
+        # one label repeats — the whole point of the section-aware path
+        # is to give the listener audible motif repetition (e.g.,
+        # "A, B, A, B" or "A, A, B, B"). Floor 2, cap at ``max_labels``.
+        n_clusters = max(2, min(max_labels, len(segments) // 2))
+        if n_clusters >= len(segments):
+            # All segments distinct — nothing to cluster.
+            cluster_ids = list(range(len(segments)))
+        elif n_clusters < 2:
             cluster_ids = [0] * len(segments)
         else:
             # Local import — sklearn is heavy, only pay the cost when we
