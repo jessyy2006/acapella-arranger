@@ -18,6 +18,8 @@ from src.data.tokenizer import decode_part
 from src.data.vocab import REST, VOCAB_SIZE, token_to_pitch
 from src.pipeline.audio_to_midi import (
     _TARGET_SR,
+    _bridge_short_rest_gaps,
+    _merge_short_runs,
     extract_lead_tokens,
     frames_to_part,
     pitch_track,
@@ -129,6 +131,49 @@ class TestExtractLeadTokens:
         missing = tmp_path / "does_not_exist.mp3"
         with pytest.raises(FileNotFoundError):
             extract_lead_tokens(missing, device="cpu")
+
+
+class TestBridgeShortRestGaps:
+    """Cover the REST-bridging helper added for issue 001."""
+
+    def test_bridges_short_gap_between_same_pitch(self):
+        frames = np.array([68, 68, -1, -1, -1, 68, 68], dtype=np.int32)
+        bridged = _bridge_short_rest_gaps(frames, max_gap=6)
+        assert bridged.tolist() == [68, 68, 68, 68, 68, 68, 68]
+
+    def test_leaves_long_gaps_alone(self):
+        # Singer paused — genuine rest, longer than the bridge threshold.
+        frames = np.array([68, 68] + [-1] * 10 + [68, 68], dtype=np.int32)
+        bridged = _bridge_short_rest_gaps(frames, max_gap=6)
+        assert (bridged == frames).all(), "gap longer than max_gap must survive"
+
+    def test_leaves_gaps_between_different_pitches_alone(self):
+        # Bridging would invent a note across a genuine pitch change.
+        frames = np.array([68, 68, -1, -1, 70, 70], dtype=np.int32)
+        bridged = _bridge_short_rest_gaps(frames, max_gap=6)
+        assert (bridged == frames).all()
+
+
+class TestMergeShortRuns:
+    """Cover the run-merger helper added for issue 001."""
+
+    def test_scoop_collapses_into_longer_target(self):
+        # Rising scoop: brief steps into a sustained target pitch.
+        runs = [(65, 2), (66, 2), (67, 2), (68, 30)]
+        merged = _merge_short_runs(runs, min_merge_frames=8)
+        assert merged == [(68, 36)], merged
+
+    def test_whole_note_wobble_is_absorbed(self):
+        # Two-frame dip mid-hold: wobble crossed a semitone boundary.
+        runs = [(68, 40), (69, 2), (68, 40)]
+        merged = _merge_short_runs(runs, min_merge_frames=8)
+        # Wobble merges into the 40-frame neighbour (tiebreak: previous).
+        assert merged == [(68, 82)], merged
+
+    def test_no_op_when_all_runs_long_enough(self):
+        runs = [(68, 20), (70, 15), (72, 20)]
+        merged = _merge_short_runs(runs, min_merge_frames=8)
+        assert merged == runs
 
 
 # ---------------------------------------------------------------------------

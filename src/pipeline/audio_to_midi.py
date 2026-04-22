@@ -20,15 +20,27 @@ Three stages:
    ``music21.stream.Part`` that ``encode_part`` then serialises to the
    same token format the harmony model was trained on.
 
-Known limitations (carried into the eval write-up):
+Post-v1 tuning after listening verdict on `outputs/smoke_input.mp3`
+(see ``docs/issues/001-soprano-divergence-and-lead-track.md``):
+
+- **MIDI-space median filter** (wide; default ~150 ms). Replaces the
+  v1 Hz-space filter, which was too narrow (50 ms) and operated before
+  the int-MIDI rounding step — so scoops produced a series of chromatic
+  passing tones instead of one sustained target pitch.
+- **REST bridging** fills short (<=60 ms) low-confidence gaps inside a
+  held note when the pitch on both sides matches. Fixes sustained notes
+  fragmenting into multiple notes + rests when CREPE confidence dipped
+  for a frame or two mid-note.
+- **Short-run merging** absorbs any run shorter than ~80 ms into its
+  longer neighbour. Collapses scoops / vibrato wobble into the target
+  note the singer actually held.
+
+Known remaining limitations:
 
 - **Octave errors** from torchcrepe. Median-filter smoothing helps; we
   do NOT attempt Viterbi decoding in v1 (spec's optional upgrade).
 - **Drum leakage** into the Demucs vocal stem can produce spurious
-  pitches on snare transients. A minimum-note-duration filter drops the
-  shortest runs as a mitigation.
-- **Talking / non-pitched segments** degrade gracefully to REST tokens
-  because confidence drops below threshold.
+  pitches on snare transients. Run-merging covers most of this.
 - **Tempo estimation** via librosa is unreliable on synthetic audio
   (the spec's test only asserts non-None output).
 - **No chunking** for long audio in v1; Demucs handles ~2 minutes on
@@ -164,6 +176,100 @@ def _hz_to_midi_int(pitch_hz: np.ndarray) -> np.ndarray:
     return midi.astype(np.int32)
 
 
+def _bridge_short_rest_gaps(midi_frames: np.ndarray, max_gap: int) -> np.ndarray:
+    """Fill REST (-1) stretches of length <= ``max_gap`` when bounded on
+    both sides by the *same* non-rest pitch.
+
+    Fixes the "held note split by a momentary confidence dip" case — the
+    singer sustains MIDI 68, CREPE confidence drops for two frames, the
+    whole note otherwise fragments into two notes + a rest.
+    """
+    if max_gap < 1 or len(midi_frames) == 0:
+        return midi_frames
+    out = midi_frames.copy()
+    n = len(out)
+    i = 0
+    while i < n:
+        if out[i] != -1:
+            i += 1
+            continue
+        start = i
+        while i < n and out[i] == -1:
+            i += 1
+        gap_len = i - start
+        if (
+            0 < gap_len <= max_gap
+            and start > 0
+            and i < n
+            and out[start - 1] == out[i]
+            and out[start - 1] != -1
+        ):
+            out[start:i] = out[start - 1]
+    return out
+
+
+def _merge_short_runs(
+    runs: list[tuple[int, int]], min_merge_frames: int
+) -> list[tuple[int, int]]:
+    """Absorb any run shorter than ``min_merge_frames`` into its longer
+    neighbour (tiebreak: previous).
+
+    Handles two symptoms at once:
+
+    - **Scoops** — a rising scoop shows up as short intermediate pitch
+      runs leading into the sustained target. The target is the longer
+      neighbour, so the scoop steps all collapse into it.
+    - **Whole-note wobble** — vibrato that crosses a semitone boundary
+      produces brief off-pitch runs inside a long held note. The held
+      note is the longer neighbour, so the wobbles get absorbed.
+
+    Iterates to a fixed point: one merge can expose another short run
+    if both neighbours of a short run were themselves short.
+    """
+    if min_merge_frames < 2 or len(runs) < 2:
+        return list(runs)
+    runs = list(runs)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(runs)):
+            val, count = runs[i]
+            if count >= min_merge_frames:
+                continue
+            if len(runs) <= 1:
+                break
+            if i == 0:
+                nxt_val, nxt_count = runs[1]
+                runs[0] = (nxt_val, count + nxt_count)
+                runs.pop(1)
+            elif i == len(runs) - 1:
+                prev_val, prev_count = runs[-2]
+                runs[-2] = (prev_val, prev_count + count)
+                runs.pop()
+            else:
+                prev_val, prev_count = runs[i - 1]
+                nxt_val, nxt_count = runs[i + 1]
+                if prev_count >= nxt_count:
+                    runs[i - 1] = (prev_val, prev_count + count)
+                else:
+                    runs[i + 1] = (nxt_val, count + nxt_count)
+                runs.pop(i)
+            changed = True
+            break
+
+    # A short run between two identical-pitch neighbours (e.g. a
+    # 68-69-68 wobble) gets absorbed into one side, leaving the two 68
+    # runs adjacent. Coalesce same-pitch neighbours so the sustained
+    # note emits as one long Note, not two consecutive ones.
+    coalesced: list[tuple[int, int]] = []
+    for val, count in runs:
+        if coalesced and coalesced[-1][0] == val:
+            coalesced[-1] = (val, coalesced[-1][1] + count)
+        else:
+            coalesced.append((val, count))
+    return coalesced
+
+
 def frames_to_part(
     times_sec: np.ndarray,
     pitch_hz: np.ndarray,
@@ -172,31 +278,57 @@ def frames_to_part(
     *,
     confidence_threshold: float = 0.5,
     smoothing_window: int = 5,
+    pitch_smoothing_window: int = 15,
+    rest_bridge_frames: int = 6,
+    min_merge_frames: int = 8,
     min_sixteenths: int = 1,
 ) -> stream.Part:
     """Collapse frame-level pitch into a quantised monophonic Part.
 
-    Groups runs of consecutive frames with the same median-filtered MIDI
-    pitch into notes (or rests for sub-threshold confidence). Durations
-    are expressed in quarter-lengths so music21 can later re-measure the
-    stream into 4/4 measures via ``makeMeasures``.
+    Pipeline (per issue 001 audio-pipeline tuning):
+
+    1. Median-filter *confidence* (Hz-level median filter is a no-op for
+       our purposes — integer-MIDI smoothing below is more effective).
+    2. Convert Hz -> int MIDI, mark sub-threshold frames as REST (-1).
+    3. **Wide median filter on MIDI integers** (``pitch_smoothing_window``,
+       default ~150 ms): kills semitone-boundary flicker that makes
+       scoops read as flats/sharps and subsumes 1-2 frame REST blips
+       into surrounding pitches.
+    4. **Explicit REST bridging** (``rest_bridge_frames``): REST gaps up
+       to N frames bounded by the same pitch on both sides are filled
+       with that pitch. Fixes longer confidence dips inside held notes
+       that the median filter can't reach.
+    5. Group into runs, then **merge any run shorter than
+       ``min_merge_frames`` into its longer neighbour** — collapses
+       scoop transitions into the target note.
+    6. Emit music21 notes/rests, ``makeMeasures`` into 4/4.
     """
     if tempo_bpm <= 0:
         raise ValueError(f"tempo_bpm must be positive, got {tempo_bpm}")
     if len(times_sec) != len(pitch_hz) or len(times_sec) != len(confidence):
         raise ValueError("times_sec, pitch_hz, confidence must be same length")
 
-    # Median-filter pitch + confidence to damp torchcrepe jitter + octave errors.
-    if smoothing_window >= 3 and len(pitch_hz) >= smoothing_window:
+    if smoothing_window >= 3 and len(confidence) >= smoothing_window:
         win = smoothing_window if smoothing_window % 2 else smoothing_window + 1
-        pitch_hz = medfilt(pitch_hz, kernel_size=win)
         confidence = medfilt(confidence, kernel_size=win)
 
     midi_frames = _hz_to_midi_int(pitch_hz)
-    # Mark low-confidence frames as rest (-1 sentinel).
     midi_frames = np.where(confidence >= confidence_threshold, midi_frames, -1).astype(
         np.int32
     )
+
+    # Wide median filter in MIDI-integer space — the key fix for scoops.
+    if pitch_smoothing_window >= 3 and len(midi_frames) >= pitch_smoothing_window:
+        win = (
+            pitch_smoothing_window
+            if pitch_smoothing_window % 2
+            else pitch_smoothing_window + 1
+        )
+        midi_frames = medfilt(midi_frames.astype(np.float32), kernel_size=win).astype(
+            np.int32
+        )
+
+    midi_frames = _bridge_short_rest_gaps(midi_frames, rest_bridge_frames)
 
     # Group consecutive frames with the same value into runs.
     runs: list[tuple[int, int]] = []  # (midi_or_-1, frame_count)
@@ -212,6 +344,8 @@ def frames_to_part(
             runs.append((cur_val, cur_count))
             cur_val, cur_count = iv, 1
     runs.append((cur_val, cur_count))
+
+    runs = _merge_short_runs(runs, min_merge_frames)
 
     # Frame hop (assume uniform) -> seconds -> sixteenths.
     frame_hop_sec = float(times_sec[1] - times_sec[0]) if len(times_sec) >= 2 else (
