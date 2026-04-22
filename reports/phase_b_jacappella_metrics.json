@@ -1,0 +1,18 @@
+{
+  "acc_a": 0.3810274097673453,
+  "acc_b": 0.35614446388885956,
+  "acc_mean": 0.37615031604367916,
+  "acc_s": 0.38171001745469135,
+  "acc_t": 0.3857193730638203,
+  "bar_acc": 0.0,
+  "duration_acc": 0.46048222323031895,
+  "pitch_count_a": 1473.0,
+  "pitch_count_b": 1437.0,
+  "pitch_count_s": 1604.0,
+  "pitch_count_t": 1558.0,
+  "range_a": 1.0,
+  "range_b": 1.0,
+  "range_s": 1.0,
+  "range_t": 1.0,
+  "voice_crossing_rate": 0.013441279547416259
+}

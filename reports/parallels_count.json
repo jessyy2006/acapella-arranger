@@ -1,0 +1,137 @@
+{
+  "baseline_phase_a_jsb": {
+    "per_sample": [
+      4,
+      2,
+      0,
+      1,
+      2,
+      0,
+      1,
+      0,
+      0,
+      1,
+      2,
+      2,
+      3,
+      1,
+      1
+    ],
+    "summary": {
+      "max": 4,
+      "mean": 1.3333333333333333,
+      "median": 1,
+      "min": 0,
+      "n_samples": 15,
+      "total": 20
+    }
+  },
+  "phase_a_jacappella": {
+    "per_sample": [
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      2,
+      0,
+      0,
+      1
+    ],
+    "summary": {
+      "max": 2,
+      "mean": 0.4666666666666667,
+      "median": 0,
+      "min": 0,
+      "n_samples": 15,
+      "total": 7
+    }
+  },
+  "phase_a_jsb": {
+    "per_sample": [
+      0,
+      0,
+      0,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      2,
+      1,
+      0
+    ],
+    "summary": {
+      "max": 2,
+      "mean": 0.4,
+      "median": 0,
+      "min": 0,
+      "n_samples": 15,
+      "total": 6
+    }
+  },
+  "phase_b_jacappella": {
+    "per_sample": [
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "summary": {
+      "max": 1,
+      "mean": 0.06666666666666667,
+      "median": 0,
+      "min": 0,
+      "n_samples": 15,
+      "total": 1
+    }
+  },
+  "phase_b_jsb": {
+    "per_sample": [
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0,
+      0,
+      0
+    ],
+    "summary": {
+      "max": 1,
+      "mean": 0.2,
+      "median": 0,
+      "min": 0,
+      "n_samples": 15,
+      "total": 3
+    }
+  }
+}
