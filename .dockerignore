@@ -1,0 +1,41 @@
+# Everything under here gets excluded from the Docker build context
+# for HF Spaces. Keeps the image small and the build fast.
+
+# Large data and model artefacts — the app pulls the trained
+# checkpoint from HF Hub at runtime, not from the image.
+checkpoints/
+data/
+outputs/
+models/
+aca-adapt/
+reports/plots/
+
+# Local dev / IDE junk
+.git/
+.github/
+.venv/
+.env
+.env.*
+.streamlit/
+.DS_Store
+.pytest_cache/
+.ipynb_checkpoints/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+node_modules/
+
+# Notebooks — not needed for serving the app
+notebooks/
+
+# Tests — not needed at runtime
+tests/
+
+# Videos / demos
+videos/
+demos/
+
+# Misc
+*.log
+*.swp

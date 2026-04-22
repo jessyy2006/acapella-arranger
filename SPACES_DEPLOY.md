@@ -33,8 +33,11 @@ Add `--private` if you don't want the weights publicly visible. A private repo s
 ## 3. Create the Space
 
 1. Go to <https://huggingface.co/new-space>.
-2. Pick a name (e.g. `aca-adapt`), SDK: **Streamlit**, hardware: **CPU basic (free)**.
-3. Create. HF gives you an empty Space repo.
+2. Pick a name (e.g. `aca-adapt`), hardware: **CPU basic (free)**.
+3. **SDK choice** — HF recently simplified the SDK picker to Gradio / Docker / Static. Pick **Docker**, then pick the **Streamlit** template when it offers one. This repo ships a tuned `Dockerfile` at the root that HF will build from.
+   - If the old SDK picker with a Streamlit option is available to you (via the URL `https://huggingface.co/new-space?sdk=streamlit`), you can pick that instead — but Docker is the canonical path now and this repo supports it out of the box.
+4. Persistent storage: **skip it**. It's $5/month and unnecessary — the first cold start after a restart re-downloads ~410 MB of model weights, which adds ~90 s but otherwise works fine.
+5. Create. HF gives you an empty Space repo.
 
 ## 4. Point the Space at your model repo
 
