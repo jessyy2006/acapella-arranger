@@ -28,13 +28,37 @@ import hashlib
 import io
 import logging
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
 
+# Streamlit prepends the script's directory (``src/app/``) to
+# ``sys.path``, not the project root, so a plain ``from src.pipeline
+# ...`` import fails inside this process. Prepending the project
+# root here — before any first-party imports — makes the app
+# runnable as ``streamlit run src/app/main.py`` from anywhere
+# without requiring a ``pip install -e .`` step.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import streamlit as st
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Heavy imports done eagerly so that missing-dependency errors (most
+# commonly ``librosa`` — indicating the user launched Streamlit from
+# the wrong conda env) fail at module load with a clear, recoverable
+# message instead of being swallowed by a later ``except Exception``
+# and surfaced as "Couldn't read that audio file".
+_IMPORT_ERROR: ImportError | None = None
+try:
+    import librosa  # noqa: E402
+    from src.pipeline.run_pipeline import run_pipeline  # noqa: E402
+except ImportError as exc:
+    _IMPORT_ERROR = exc
+    librosa = None  # type: ignore[assignment]
+    run_pipeline = None  # type: ignore[assignment]
+
 _DEFAULT_CHECKPOINT = _PROJECT_ROOT / "checkpoints" / "phase_b" / "phase_b_final.pt"
 _CHECKPOINT = Path(os.environ.get("ACA_ADAPT_CHECKPOINT", _DEFAULT_CHECKPOINT))
 
@@ -133,8 +157,6 @@ def _probe_audio(audio_bytes: bytes, suffix: str) -> tuple[float, int]:
     panel don't re-decode the file. ``suffix`` is part of the cache key
     so two clips that happen to share bytes-length stay distinct.
     """
-    import librosa
-
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
@@ -166,9 +188,6 @@ def _run_arrangement(
     sense of forward motion rather than a spinner stalled on the
     Demucs download.
     """
-    # Imported lazily so the app boots quickly when nothing's uploaded.
-    from src.pipeline.run_pipeline import run_pipeline
-
     if not _CHECKPOINT.is_file():
         raise FileNotFoundError(
             f"Model checkpoint not found at {_CHECKPOINT}. "
@@ -207,6 +226,43 @@ def _run_arrangement(
 
     elapsed = time.monotonic() - t0
     return midi_bytes, {"elapsed_sec": elapsed}
+
+
+def _render_env_error(exc: ImportError) -> None:
+    """Display a structured 'your Python environment is wrong' banner.
+
+    Triggered when a first-party or third-party import at module load
+    raised — almost always because the user launched Streamlit from
+    ``base`` / a non-project env and ``librosa`` (or a peer) isn't
+    installed. Names the missing module, the interpreter that's
+    running, and the exact command sequence to recover.
+    """
+    st.error(
+        "The app is running in a Python environment that's missing a "
+        "required dependency."
+    )
+    missing = getattr(exc, "name", None) or str(exc)
+    st.markdown(
+        f"""
+- **Missing module**: `{missing}`
+- **Interpreter in use**: `{sys.executable}`
+- **Project root on sys.path**: `{_PROJECT_ROOT}`
+
+**Fix**: quit this process, activate the project env, and relaunch:
+
+```bash
+conda activate aca-adapt
+streamlit run src/app/main.py
+```
+
+If you don't use conda, install the deps into whatever env this
+Streamlit is running from:
+
+```bash
+pip install -r requirements.txt
+```
+"""
+    )
 
 
 def _render_hero() -> None:
@@ -291,6 +347,15 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     _inject_css()
+
+    # Preflight: if the module-load imports above failed, nothing in
+    # the app will work. Render a recoverable banner instead of the
+    # default "couldn't read audio / no module named X" mystery.
+    if _IMPORT_ERROR is not None:
+        _render_hero()
+        _render_env_error(_IMPORT_ERROR)
+        return
+
     _render_hero()
 
     # ---- Upload card -------------------------------------------------
