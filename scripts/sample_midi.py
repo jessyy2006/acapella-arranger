@@ -67,6 +67,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="Pitch-position sampling temperature. 0.0 = greedy.")
     p.add_argument("--duration-temperature", type=float, default=1.1,
                    help="Temperature override for duration-token positions.")
+    # Bass-only overrides — the global temperatures are tuned for S/A/T,
+    # which need variety; bass needs the opposite (long held root notes).
+    # See docs/issues/002-bass-voice-too-short-and-jumpy.md.
+    p.add_argument("--bass-temperature", type=float, default=0.3,
+                   help="Pitch temperature for bass only (default: stable root notes).")
+    p.add_argument("--bass-duration-temperature", type=float, default=0.7,
+                   help="Duration temperature for bass only (default: long held notes).")
     p.add_argument("--top-k", type=int, default=10,
                    help="Restrict sampling to top-k tokens; 0 or None disables.")
     p.add_argument("--suffix", type=str, default="",
@@ -103,10 +110,17 @@ def main(argv: list[str] | None = None) -> int:
 
     generated: dict[str, list[int]] = {}
     for voice in _VOICES:
+        # Bass gets stricter sampling than S/A/T — it's a single voice
+        # with different aesthetic expectations (hold the root, don't
+        # dance around). See issue 002.
+        v_temp = args.bass_temperature if voice == "b" else args.temperature
+        v_dur_temp = (
+            args.bass_duration_temperature if voice == "b" else args.duration_temperature
+        )
         generated[voice] = generate_voice_tokens(
             model, lead, voice, args.max_len, device,
-            temperature=args.temperature,
-            duration_temperature=args.duration_temperature,
+            temperature=v_temp,
+            duration_temperature=v_dur_temp,
             top_k=args.top_k,
         )
         logger.info("voice %s: generated %d tokens", voice, len(generated[voice]))

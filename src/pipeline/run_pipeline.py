@@ -84,11 +84,21 @@ def run_pipeline(
     max_len: int = 256,
     tempo_bpm: float | None = None,
     device: str | None = None,
+    # Bass-specific sampling overrides. The global ``temperature`` and
+    # ``duration_temperature`` defaults were tuned to stop S/A/T from
+    # collapsing onto the modal quarter-note bucket — the exact behaviour
+    # *bass* should have. Pop bass conventions want long held notes and
+    # stable pitches, so we drop both temperatures on bass only. See
+    # ``docs/issues/002-bass-voice-too-short-and-jumpy.md``.
+    bass_temperature: float = 0.3,
+    bass_duration_temperature: float = 0.7,
 ) -> Path:
     """Arrange ``audio_path`` as an SATB MIDI. Returns the output path.
 
     Parameters mirror the CLI. Sampling defaults are the values locked
-    in after Phase 1 listening tests; change them at your own risk.
+    in after Phase 1 listening tests; change them at your own risk. The
+    bass voice uses stricter defaults than S/A/T — see the kwarg
+    comment above for the rationale.
     """
     audio_path = Path(audio_path)
     if not audio_path.is_file():
@@ -114,10 +124,14 @@ def run_pipeline(
 
     generated: dict[str, list[int]] = {}
     for voice in VOICES:
+        # Bass gets stricter temperatures so it reads as a pop bass line
+        # (long held root notes) instead of mimicking the upper voices.
+        v_temp = bass_temperature if voice == "b" else temperature
+        v_dur_temp = bass_duration_temperature if voice == "b" else duration_temperature
         generated[voice] = generate_voice_tokens(
             model, lead_tensor, voice, max_len, dev,
-            temperature=temperature,
-            duration_temperature=duration_temperature,
+            temperature=v_temp,
+            duration_temperature=v_dur_temp,
             top_k=top_k,
         )
         logger.info("voice %s: %d tokens", voice, len(generated[voice]))
@@ -159,6 +173,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--temperature", type=float, default=0.5)
     p.add_argument("--duration-temperature", type=float, default=1.1)
+    p.add_argument("--bass-temperature", type=float, default=0.3,
+                   help="Pitch-sampling temperature for bass only. Default 0.3 "
+                        "yields stable root-note bass lines; raise toward the "
+                        "global --temperature if you want a walking bass.")
+    p.add_argument("--bass-duration-temperature", type=float, default=0.7,
+                   help="Duration temperature for bass only. Default 0.7 "
+                        "biases bass toward long held notes.")
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--tempo-bpm", type=float, default=None)
@@ -179,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
         model_class=args.model_class,
         temperature=args.temperature,
         duration_temperature=args.duration_temperature,
+        bass_temperature=args.bass_temperature,
+        bass_duration_temperature=args.bass_duration_temperature,
         top_k=args.top_k,
         max_len=args.max_len,
         tempo_bpm=args.tempo_bpm,
