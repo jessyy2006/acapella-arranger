@@ -32,83 +32,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.loaders import load_dataset
 from src.data.tokenizer import decode_part
-from src.data.vocab import EOS, PAD, REST, SOS, is_pitch_token
+from src.data.vocab import PAD, SOS
 from src.eval.evaluate import _build_model, _load_hparams_from_sources, _resolve_device
+from src.pipeline.decode import VOICES as _VOICES, generate_voice_tokens
 from src.postprocess.voice_leading import apply_voice_leading
 
 logger = logging.getLogger("sample_midi")
-
-_VOICES: tuple[str, ...] = ("s", "a", "t", "b")
-
-
-@torch.no_grad()
-def _generate_voice(
-    model: torch.nn.Module,
-    lead: torch.Tensor,  # (1, L_lead) on device
-    voice: str,
-    max_len: int,
-    device: torch.device,
-    *,
-    temperature: float = 0.0,
-    duration_temperature: float | None = None,
-    top_k: int | None = None,
-) -> list[int]:
-    """Autoregressive decode of a single voice conditioned on ``lead``.
-
-    Forwards the full batch each step (O(L^2) but fine for ~200 tokens).
-    ``temperature=0.0`` is greedy (argmax); positive values sample from
-    the (temperature-scaled) logits. ``duration_temperature`` (if given)
-    overrides ``temperature`` when the *previous* emitted token was a
-    pitch or REST — those positions are where the tokenizer grammar
-    expects a duration next, and a higher duration temperature
-    encourages the model to explore longer notes instead of collapsing
-    on the modal quarter-note bucket. ``top_k`` clips to the top-k most
-    likely tokens to keep samples on-distribution. Generation stops at
-    EOS, PAD, or ``max_len`` tokens.
-    """
-    tokens: list[int] = [SOS]
-    generator = torch.Generator(device="cpu").manual_seed(0)
-    dur_temp = duration_temperature if duration_temperature is not None else temperature
-
-    for _ in range(max_len):
-        current = torch.tensor([tokens], dtype=torch.long, device=device)
-        batch = {
-            "lead": lead,
-            "lead_len": torch.tensor([lead.shape[1]], device=device),
-        }
-        for v in _VOICES:
-            batch[v] = current if v == voice else torch.tensor([[SOS]], device=device)
-            batch[f"{v}_len"] = torch.tensor([1], device=device)
-
-        logits = model(batch)[voice][0, -1, :]  # (V,)
-
-        # Pick the temperature based on what position this is. The grammar
-        # alternates (pitch|REST, duration). If the last emitted token was
-        # a pitch or REST, the next one *should* be a duration — bump the
-        # temperature there so durations vary instead of collapsing.
-        prev_tok = tokens[-1]
-        expecting_duration = is_pitch_token(prev_tok) or prev_tok == REST
-        effective_temp = dur_temp if expecting_duration else temperature
-
-        if effective_temp <= 0.0:
-            next_tok = int(logits.argmax(dim=-1).item())
-        else:
-            scaled = logits / effective_temp
-            if top_k is not None and top_k > 0:
-                kth = torch.topk(scaled, k=top_k).values[-1]
-                scaled = torch.where(
-                    scaled < kth, torch.full_like(scaled, float("-inf")), scaled
-                )
-            probs = torch.softmax(scaled, dim=-1).cpu()
-            next_tok = int(torch.multinomial(probs, num_samples=1, generator=generator).item())
-
-        if next_tok == PAD:
-            break
-        tokens.append(next_tok)
-        if next_tok == EOS:
-            break
-
-    return tokens
 
 
 def _assemble_score(tokens_by_voice: dict[str, list[int]]) -> stream.Score:
@@ -174,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
 
     generated: dict[str, list[int]] = {}
     for voice in _VOICES:
-        generated[voice] = _generate_voice(
+        generated[voice] = generate_voice_tokens(
             model, lead, voice, args.max_len, device,
             temperature=args.temperature,
             duration_temperature=args.duration_temperature,

@@ -34,8 +34,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.loaders import load_dataset
 from src.eval.evaluate import _build_model, _load_hparams_from_sources, _resolve_device
+from src.pipeline.decode import VOICES as _VOICES, generate_voice_tokens
 from src.postprocess.voice_leading import detect_parallel_motion
-from scripts.sample_midi import _generate_voice, _VOICES
 
 logger = logging.getLogger("count_parallels")
 
@@ -110,7 +110,7 @@ def count_run(
         lead = dataset[idx]["lead"].unsqueeze(0).to(device)
         generated: dict[str, list[int]] = {}
         for voice in _VOICES:
-            generated[voice] = _generate_voice(
+            generated[voice] = generate_voice_tokens(
                 model, lead, voice, max_len, device,
                 temperature=temperature,
                 duration_temperature=duration_temperature,
