@@ -7,8 +7,14 @@ Three stages:
    arxiv.org/abs/2211.08553) that extends the original time-domain
    Demucs by adding a cross-domain Transformer between the encoder and
    decoder, attending over both time and spectrogram representations.
-   We use the ``htdemucs`` checkpoint (80 MB, 4-stem separation: drums,
-   bass, other, vocals) — index 3 of the output is the vocal stem.
+   We default to the ``htdemucs_ft`` checkpoint (330 MB, fine-tuned
+   4-stem separation: drums, bass, other, vocals). The plain
+   ``htdemucs`` (80 MB) is faster and available via ``demucs_model``
+   kwarg when iteration speed matters more than stem quality; on pop
+   material with dense instrumentals the fine-tuned variant is worth
+   the extra ~1-2 minutes per clip because it drops far less
+   background content into the vocal stem, which cascades into better
+   downstream pitch tracking.
 
 2. **torchcrepe** (PyTorch port of CREPE; Kim et al., 2018) predicts a
    pitch in Hz + confidence for every 10-ms frame of the vocal. The
@@ -116,6 +122,8 @@ def _pick_device(device: str | None) -> torch.device:
 def isolate_vocals(
     audio_path: str | Path,
     device: str | torch.device | None = None,
+    *,
+    demucs_model: str = "htdemucs_ft",
 ) -> tuple[np.ndarray, int]:
     """Run HT-Demucs and return the vocal stem + sample rate.
 
@@ -123,6 +131,11 @@ def isolate_vocals(
     ``demucs.pretrained.get_model`` so subsequent calls are fast.
     Returns a 2-D ``(channels, samples)`` float32 numpy array at the
     model's native sample rate (44.1 kHz).
+
+    Default ``demucs_model='htdemucs_ft'`` is the fine-tuned variant
+    (330 MB, slower, cleaner vocal stem). Switch to ``'htdemucs'``
+    (80 MB, faster, rougher stem) when iteration speed matters more
+    than isolation quality.
     """
     audio_path = Path(audio_path)
     if not audio_path.is_file():
@@ -135,8 +148,8 @@ def isolate_vocals(
     from demucs.pretrained import get_model
 
     dev = _pick_device(device if isinstance(device, str) or device is None else str(device))
-    logger.info("loading htdemucs onto %s", dev)
-    model = get_model("htdemucs")
+    logger.info("loading %s onto %s", demucs_model, dev)
+    model = get_model(demucs_model)
     model.to(dev).eval()
 
     wav, sr = librosa.load(str(audio_path), sr=None, mono=False)
@@ -555,6 +568,7 @@ def extract_lead_tokens(
     device: str | torch.device | None = None,
     crepe_model: _CrepeModel = "full",
     confidence_threshold: float = 0.5,
+    demucs_model: str = "htdemucs_ft",
 ) -> list[int]:
     """End-to-end: audio file -> lead-melody token list.
 
@@ -572,7 +586,7 @@ def extract_lead_tokens(
         raise FileNotFoundError(str(audio_path))
 
     logger.info("isolating vocals from %s", audio_path)
-    vocal, sr = isolate_vocals(audio_path, device=device)
+    vocal, sr = isolate_vocals(audio_path, device=device, demucs_model=demucs_model)
 
     if tempo_bpm is None:
         mono = librosa.to_mono(vocal) if vocal.ndim > 1 else vocal
