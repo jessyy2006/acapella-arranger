@@ -408,6 +408,7 @@ def frames_to_part(
     confidence_threshold: float = 0.5,
     amplitude_db: np.ndarray | None = None,
     amplitude_threshold_db: float = -50.0,
+    amplitude_relative_db: float = 30.0,
     smoothing_window: int = 5,
     pitch_smoothing_window: int = 21,
     rest_bridge_frames: int = 6,
@@ -423,10 +424,13 @@ def frames_to_part(
     1. Median-filter *confidence* (Hz-level median filter is a no-op for
        our purposes — integer-MIDI smoothing below is more effective).
     2. Convert Hz -> int MIDI, mark frames as REST (-1) when confidence
-       is below ``confidence_threshold`` OR ``amplitude_db`` is below
-       ``amplitude_threshold_db``. The amplitude gate catches pauses
-       where Demucs bleed or reverb tail gives CREPE a confident but
-       inaudible pitch.
+       is below ``confidence_threshold`` OR amplitude is below an
+       *adaptive* gate: ``max(amplitude_threshold_db, p95(amplitude_db)
+       - amplitude_relative_db)``. The gate scales with the song's
+       loud moments so quiet sections (softer singing, outros) use a
+       stricter effective threshold than loud sections — this is the
+       only way to catch reverb/bleed in pauses without also washing
+       out soft high notes in the main material.
     3. **Wide median filter on MIDI integers** (``pitch_smoothing_window``,
        default ~150 ms): kills semitone-boundary flicker that makes
        scoops read as flats/sharps and subsumes 1-2 frame REST blips
@@ -463,7 +467,20 @@ def frames_to_part(
                 f"amplitude_db length {len(amplitude_db)} must match pitch_hz "
                 f"length {len(midi_frames)}"
             )
-        is_voiced = is_voiced & (amplitude_db >= amplitude_threshold_db)
+        # Adaptive threshold: set the gate relative to the song's loud
+        # moments (95th percentile), never below the floor. A fixed
+        # threshold either over-rejects soft notes (missing high falsetto)
+        # OR under-rejects Demucs bleed (missing pauses) — the two
+        # failure modes we saw on the smoke clip. Relative gating
+        # resolves the tension because the gate scales with the actual
+        # signal level.
+        p95 = float(np.percentile(amplitude_db, 95))
+        effective_threshold = max(amplitude_threshold_db, p95 - amplitude_relative_db)
+        logger.info(
+            "amp gate: p95=%.1f dB, effective threshold=%.1f dB (floor=%.1f, relative=%.1f)",
+            p95, effective_threshold, amplitude_threshold_db, amplitude_relative_db,
+        )
+        is_voiced = is_voiced & (amplitude_db >= effective_threshold)
     midi_frames = np.where(is_voiced, midi_frames, -1).astype(np.int32)
 
     # Wide median filter in MIDI-integer space — the key fix for scoops.
