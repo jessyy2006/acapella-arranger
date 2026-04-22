@@ -69,5 +69,9 @@ echo "→ force-pushing ${SNAPSHOT_BRANCH} → ${SPACE_REMOTE}/main"
 git push --force "${SPACE_REMOTE}" "${SNAPSHOT_BRANCH}:main"
 
 # Restore the user's previous branch so they can keep working.
-git checkout --quiet "${original_branch}"
+# ``-f`` because on the orphan branch, the excluded paths (e.g.
+# reports/plots/) became untracked files — a plain checkout
+# refuses to overwrite them with the tracked versions from main.
+# The file contents are identical, so force-checkout is safe.
+git checkout --quiet -f "${original_branch}"
 echo "✓ done. Space should rebuild in 1–2 minutes."
