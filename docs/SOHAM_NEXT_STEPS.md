@@ -29,34 +29,37 @@ Colab is the fastest path because your checkpoints are already on the Colab-moun
 
 If you prefer local: `git fetch && git checkout fix/evaluation-review` in your clone. You'll also need to run the local data bootstrap from Step 0 of `PARTNER_EXECUTION_PLAN.md` if you haven't already.
 
-### 1b. Run the fixed eval against Phase A
+### 1b. Run the fixed eval against Phase A — use the **JSB-only** test split
+
+Key point that the original draft of this doc got wrong: per `configs/train.yaml:63`, Phase A trained + validated on JSB only (`val_jsb.pt`). The training-CSV `val_acc_s = 0.6265` is a JSB-only number. So the apples-to-apples eval is against `test_jsb.pt`, not the combined `test.pt` — otherwise half the test examples are jaCappella that Phase A never saw, and you'll see a 10+ point gap that looks like a fix failure but is really a split mismatch. (This is exactly what the first eval regen showed: `acc_s = 0.5133` on combined test, ~11 pts below the 0.6265 CSV value.)
 
 ```bash
 python -m src.eval.evaluate \
   --checkpoint /content/drive/MyDrive/<your-folder>/phase_a_final.pt \
-  --split data/processed/test.pt \
+  --split data/processed/test_jsb.pt \
   --model-class hybrid \
   --out-json reports/phase_a_eval_v2.json \
   --out-md reports/phase_a_eval_v2.md
 ```
 
-Swap the `--checkpoint` path for wherever `phase_a_final.pt` lives on your Drive.
+If `test_jsb.pt` doesn't exist on your Colab Drive (older prepare_data.py runs only produced the combined split), regenerate once with `python scripts/prepare_data.py --force` from the repo root — ~5 min, produces all 9 per-corpus + combined split files.
 
-**Note on hparams:** the fixed `evaluate.py` auto-reads model hparams from `configs/train.yaml` if no sidecar config exists, so as long as you trained with the default config (you did — the `d_model=256` in the CSV matches the yaml), no extra setup is needed. If you ever train a variant with tweaked hparams, drop a sibling `<checkpoint-stem>.config.json` next to the `.pt` with the right values.
+**Note on hparams:** the fixed `evaluate.py` auto-reads model hparams from `configs/train.yaml` if no sidecar config exists, so as long as you trained with the default config (you did — the `d_model=256` in the CSV matches the yaml), no extra setup is needed.
 
 ### 1c. Compare the new numbers against the training CSV
 
-Open `reports/phase_a_eval_v2.md` and check `acc_s`. It should land in the **0.55–0.65** range.
+Open `reports/phase_a_eval_v2.md` and check `acc_s`. On `test_jsb.pt` it should land in the **0.58–0.66** range.
 
 - **Training CSV reference** (`reports/phase_a_loss.csv`, epoch 24): `val_acc_s = 0.6265`, `val_acc_a = 0.4920`, `val_acc_t = 0.5427`, `val_acc_b = 0.4526`.
-- **Expect within ~5 points** on each voice — eval is on the test split, training CSV is on the val split, so they're not identical but should be close.
+- **Expect within ~3 points** on each voice — test split uses different songs than val but same JSB distribution.
 
 Expected results:
 
 | outcome | what it means | action |
 |---|---|---|
-| `acc_s ≈ 0.6`, all voices close to training CSV | Fix works — `_build_model` was the bug | Proceed to 1d |
-| `acc_s` still ~0.28, or way off | Second bug — stop and ping Jess with the output JSON | Don't merge |
+| `acc_s ≈ 0.61`, all voices within ~3 pts of CSV | Fix works cleanly | Proceed to 1d |
+| `acc_s` still ~0.28 on `test_jsb.pt` | Second bug — stop and ping Jess with the output JSON | Don't merge |
+| `acc_s ≈ 0.51` (same number as on combined `test.pt`) | Probably pointed at the wrong test file — confirm `--split` flag | Re-run |
 | Error on load (shape mismatch, etc.) | Likely a checkpoint-format issue | Ping Jess with the full traceback |
 
 Also check `bar_acc` — it should now be **non-zero** (previously 0.0000 everywhere). A low-but-positive number (e.g. 0.01–0.05) is correct; per-bar exact match is punishing.
@@ -78,18 +81,37 @@ git checkout feat/evaluation
 git pull --ff-only
 ```
 
-### 1e. Re-run Phase B eval and overwrite the old reports
+### 1e. Regenerate production metrics — **per-corpus splits**
 
-With the fixed harness, regenerate `reports/phase_a_final_metrics.{json,md}` and `reports/phase_b_final_metrics.{json,md}` so the README can cite real numbers:
+With the fixed harness AND the correct splits, regenerate the eval reports. Run four evals (two checkpoints × two per-corpus splits), writing to canonical filenames:
 
 ```bash
-python -m src.eval.evaluate --checkpoint <phase_a_final.pt> --split data/processed/test.pt \
-  --out-json reports/phase_a_final_metrics.json --out-md reports/phase_a_final_metrics.md
-python -m src.eval.evaluate --checkpoint <phase_b_final.pt> --split data/processed/test.pt \
-  --out-json reports/phase_b_final_metrics.json --out-md reports/phase_b_final_metrics.md
+# Phase A on JSB (its training distribution)
+python -m src.eval.evaluate --checkpoint <phase_a_final.pt> --split data/processed/test_jsb.pt \
+  --out-json reports/phase_a_jsb_metrics.json --out-md reports/phase_a_jsb_metrics.md
+
+# Phase A on jaCappella (out-of-distribution — useful baseline for the ablation story)
+python -m src.eval.evaluate --checkpoint <phase_a_final.pt> --split data/processed/test_jacappella.pt \
+  --out-json reports/phase_a_jacappella_metrics.json --out-md reports/phase_a_jacappella_metrics.md
+
+# Phase B on JSB (tests catastrophic forgetting)
+python -m src.eval.evaluate --checkpoint <phase_b_final.pt> --split data/processed/test_jsb.pt \
+  --out-json reports/phase_b_jsb_metrics.json --out-md reports/phase_b_jsb_metrics.md
+
+# Phase B on jaCappella (its fine-tuning target — the headline number)
+python -m src.eval.evaluate --checkpoint <phase_b_final.pt> --split data/processed/test_jacappella.pt \
+  --out-json reports/phase_b_jacappella_metrics.json --out-md reports/phase_b_jacappella_metrics.md
 ```
 
-Commit them to `feat/evaluation` with a message like `regenerate phase a/b eval with fixed harness`.
+**Delete the now-stale combined-test files** before committing (`reports/phase_a_final_metrics.*`, `reports/phase_b_final_metrics.*`, and `reports/phase_a_eval_v2.*` / `phase_b_eval_v2.*` — those last four duplicate the others). These were regenerated earlier against the wrong split and would confuse a grader.
+
+Commit with a message like `regenerate phase a/b eval against per-corpus test splits`.
+
+**Expected story** (useful for the ablation discussion later):
+- Phase A on JSB ≈ training-CSV val numbers → fix works
+- Phase A on jaCappella much lower → out-of-distribution, expected
+- Phase B on jaCappella higher than Phase A on jaCappella → fine-tune worked
+- Phase B on JSB likely lower than Phase A on JSB → some catastrophic forgetting (worth one sentence in the methodology section; it's a real finding, not a bug)
 
 ## Priority 2 — Real ablation axes (~3h wall-clock + 1h code)
 
