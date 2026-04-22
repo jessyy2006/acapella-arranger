@@ -128,14 +128,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--example", type=int, default=0, help="Index of the example in --split")
     p.add_argument("--model-class", choices=("hybrid", "baseline"), default="hybrid")
     p.add_argument("--max-len", type=int, default=256)
-    p.add_argument("--temperature", type=float, default=0.0,
-                   help="0.0 = greedy, >0 = stochastic sampling. Try 0.7-0.9.")
-    p.add_argument("--duration-temperature", type=float, default=None,
-                   help="Temperature override for duration-token positions. "
-                        "Raise this above --temperature (try 1.2-1.4) to get more "
-                        "variation in note length — otherwise the model collapses "
-                        "on the modal quarter-note bucket.")
-    p.add_argument("--top-k", type=int, default=None,
+    # Defaults locked in after human listening tests across v1-v4. Greedy
+    # (T=0) produces degenerate A/T/B; T>0.6 introduces audible dissonance
+    # because the four voices generate independently (no cross-voice
+    # attention in the current hybrid architecture). T=0.5 + top-k 10 is
+    # the empirical sweet spot; duration-T 1.1 keeps note lengths varied
+    # without collapsing on the quarter-note bucket.
+    p.add_argument("--temperature", type=float, default=0.5,
+                   help="Pitch-position sampling temperature. 0.0 = greedy.")
+    p.add_argument("--duration-temperature", type=float, default=1.1,
+                   help="Temperature override for duration-token positions.")
+    p.add_argument("--top-k", type=int, default=10,
                    help="Restrict sampling to top-k tokens; 0 or None disables.")
     p.add_argument("--suffix", type=str, default="",
                    help="Appended to output filenames, e.g. '_t08' to distinguish runs.")
