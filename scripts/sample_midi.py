@@ -48,21 +48,24 @@ def _generate_voice(
     voice: str,
     max_len: int,
     device: torch.device,
+    *,
+    temperature: float = 0.0,
+    top_k: int | None = None,
 ) -> list[int]:
-    """Greedy autoregressive decode of a single voice conditioned on ``lead``.
+    """Autoregressive decode of a single voice conditioned on ``lead``.
 
-    We forward the full batch each step (O(L^2) but fine for ~200 tokens)
-    and take argmax at the last position. Generation stops at EOS or
-    ``max_len`` tokens, whichever comes first.
+    We forward the full batch each step (O(L^2) but fine for ~200 tokens).
+    ``temperature=0.0`` is greedy (argmax); positive values enable
+    stochastic sampling from the (temperature-scaled) logits. ``top_k``
+    optionally restricts sampling to the top-k most likely tokens to
+    keep outputs on-distribution. Generation stops at EOS, PAD, or
+    ``max_len`` tokens.
     """
     tokens: list[int] = [SOS]
+    generator = torch.Generator(device="cpu").manual_seed(0)
 
-    # Build a minimal batch dict compatible with SATBHybrid.forward.
     for _ in range(max_len):
         current = torch.tensor([tokens], dtype=torch.long, device=device)
-        # Every voice key must be present in the batch; fill the others
-        # with SOS-only so the model still forwards cleanly. We only read
-        # the voice we're decoding.
         batch = {
             "lead": lead,
             "lead_len": torch.tensor([lead.shape[1]], device=device),
@@ -71,11 +74,21 @@ def _generate_voice(
             batch[v] = current if v == voice else torch.tensor([[SOS]], device=device)
             batch[f"{v}_len"] = torch.tensor([1], device=device)
 
-        logits = model(batch)
-        next_tok = int(logits[voice][0, -1, :].argmax(dim=-1).item())
+        logits = model(batch)[voice][0, -1, :]  # (V,)
+
+        if temperature <= 0.0:
+            next_tok = int(logits.argmax(dim=-1).item())
+        else:
+            scaled = logits / temperature
+            if top_k is not None and top_k > 0:
+                kth = torch.topk(scaled, k=top_k).values[-1]
+                scaled = torch.where(
+                    scaled < kth, torch.full_like(scaled, float("-inf")), scaled
+                )
+            probs = torch.softmax(scaled, dim=-1).cpu()
+            next_tok = int(torch.multinomial(probs, num_samples=1, generator=generator).item())
 
         if next_tok == PAD:
-            # Model wants to pad; treat as done.
             break
         tokens.append(next_tok)
         if next_tok == EOS:
@@ -101,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--example", type=int, default=0, help="Index of the example in --split")
     p.add_argument("--model-class", choices=("hybrid", "baseline"), default="hybrid")
     p.add_argument("--max-len", type=int, default=256)
+    p.add_argument("--temperature", type=float, default=0.0,
+                   help="0.0 = greedy, >0 = stochastic sampling. Try 0.8-1.0.")
+    p.add_argument("--top-k", type=int, default=None,
+                   help="Restrict sampling to top-k tokens; 0 or None disables.")
+    p.add_argument("--suffix", type=str, default="",
+                   help="Appended to output filenames, e.g. '_t08' to distinguish runs.")
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--out-dir", type=Path, default=Path("outputs"))
     args = p.parse_args(argv)
@@ -133,21 +152,24 @@ def main(argv: list[str] | None = None) -> int:
 
     generated: dict[str, list[int]] = {}
     for voice in _VOICES:
-        generated[voice] = _generate_voice(model, lead, voice, args.max_len, device)
+        generated[voice] = _generate_voice(
+            model, lead, voice, args.max_len, device,
+            temperature=args.temperature, top_k=args.top_k,
+        )
         logger.info("voice %s: generated %d tokens", voice, len(generated[voice]))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # VL-off: assemble and write raw.
     vl_off_score = _assemble_score(generated)
-    vl_off_path = args.out_dir / f"sample_{args.checkpoint.stem}_vl_off.mid"
+    vl_off_path = args.out_dir / f"sample_{args.checkpoint.stem}{args.suffix}_vl_off.mid"
     vl_off_score.write("midi", fp=str(vl_off_path))
     logger.info("wrote %s", vl_off_path)
 
     # VL-on: apply post-process, then assemble.
     generated_vl_on = apply_voice_leading(generated, enable_range_clamp=True, enable_parallel_detect=True)
     vl_on_score = _assemble_score(generated_vl_on)
-    vl_on_path = args.out_dir / f"sample_{args.checkpoint.stem}_vl_on.mid"
+    vl_on_path = args.out_dir / f"sample_{args.checkpoint.stem}{args.suffix}_vl_on.mid"
     vl_on_score.write("midi", fp=str(vl_on_path))
     logger.info("wrote %s", vl_on_path)
 
@@ -157,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     lead_part.partName = "LEAD"
     lead_score = stream.Score()
     lead_score.insert(0, lead_part)
-    lead_path = args.out_dir / f"sample_{args.checkpoint.stem}_lead.mid"
+    lead_path = args.out_dir / f"sample_{args.checkpoint.stem}{args.suffix}_lead.mid"
     lead_score.write("midi", fp=str(lead_path))
     logger.info("wrote %s", lead_path)
 
