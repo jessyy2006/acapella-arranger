@@ -34,6 +34,15 @@ Post-v1 tuning after listening verdict on `outputs/smoke_input.mp3`
 - **Short-run merging** absorbs any run shorter than ~80 ms into its
   longer neighbour. Collapses scoops / vibrato wobble into the target
   note the singer actually held.
+- **Key-aware snapping** (Krumhansl-Schmuckler). The 3 fixes above
+  clean frame-level jitter but can't correct genuinely chromatic pitch
+  labels left over from rapid singer transitions (CREPE rounds Hz to
+  the nearest semitone, and rapid ornaments cross chromatic semitones
+  in physical reality). We detect the song's major/minor key from the
+  post-smoothed pitch-class histogram and snap each out-of-key frame
+  to the nearest in-key pitch within 2 semitones. Skips snapping when
+  the best correlation is below 0.4 — safer than forcing a key on
+  modulating or atonal clips.
 
 Known remaining limitations:
 
@@ -51,7 +60,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import librosa
 import numpy as np
@@ -72,6 +81,21 @@ _FMIN = 50.0  # below bass low E
 _FMAX = 1100.0  # above soprano high C
 
 _CrepeModel = Literal["tiny", "small", "medium", "full"]
+
+# Krumhansl-Schmuckler 1990 key profiles (stability weights for each scale
+# degree, pitch-class 0 = tonic). Used to detect a song's key by Pearson-
+# correlating these rolled profiles against the observed pitch-class
+# histogram of the vocal line.
+_KRUMHANSL_MAJOR = np.array(
+    [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
+    dtype=np.float64,
+)
+_KRUMHANSL_MINOR = np.array(
+    [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17],
+    dtype=np.float64,
+)
+_MAJOR_SCALE_OFFSETS: Final[tuple[int, ...]] = (0, 2, 4, 5, 7, 9, 11)
+_MINOR_SCALE_OFFSETS: Final[tuple[int, ...]] = (0, 2, 3, 5, 7, 8, 10)  # natural minor
 
 
 def _pick_device(device: str | None) -> torch.device:
@@ -270,6 +294,85 @@ def _merge_short_runs(
     return coalesced
 
 
+def _detect_scale_pitch_classes(
+    midi_frames: np.ndarray, *, min_score: float = 0.4, min_frames: int = 20
+) -> frozenset[int] | None:
+    """Krumhansl-Schmuckler key detection on the pitch-class histogram.
+
+    Returns the 7 in-key pitch classes of the best-matching major or minor
+    key, or ``None`` when the signal is too sparse / the correlation is
+    too weak to trust a single-key model. In the ``None`` case callers
+    should leave the pitches alone rather than force-snap into a bad key.
+    """
+    if midi_frames.size == 0:
+        return None
+    valid = midi_frames[midi_frames >= 0]
+    if valid.size < min_frames:
+        return None
+
+    hist = np.bincount(valid % 12, minlength=12).astype(np.float64)
+    if hist.sum() <= 0:
+        return None
+    hist /= hist.sum()
+
+    best_score = -np.inf
+    best_pcs: frozenset[int] | None = None
+    for profile, offsets in (
+        (_KRUMHANSL_MAJOR, _MAJOR_SCALE_OFFSETS),
+        (_KRUMHANSL_MINOR, _MINOR_SCALE_OFFSETS),
+    ):
+        for tonic in range(12):
+            rolled = np.roll(profile, tonic)
+            # np.corrcoef is NaN when a vector has zero variance — guard
+            # that (all-zero histogram already returned above, but a
+            # single-pitch-class histogram would also trip the check).
+            if np.std(hist) == 0:
+                return None
+            score = float(np.corrcoef(hist, rolled)[0, 1])
+            if score > best_score:
+                best_score = score
+                best_pcs = frozenset((tonic + o) % 12 for o in offsets)
+
+    if best_score < min_score:
+        logger.info(
+            "key-detect correlation %.2f below %.2f — skipping snap",
+            best_score, min_score,
+        )
+        return None
+    return best_pcs
+
+
+def _snap_to_scale(
+    midi_frames: np.ndarray,
+    allowed_pcs: frozenset[int],
+    *,
+    max_distance: int = 2,
+) -> np.ndarray:
+    """Snap each out-of-key, non-rest frame to the nearest in-key pitch.
+
+    Searches outward by ``max_distance`` semitones (tries ±1, ±2, …). If
+    no in-key pitch exists within the radius, the frame is left alone —
+    it's a genuine accidental and the singer meant it.
+    """
+    if not allowed_pcs:
+        return midi_frames
+    out = midi_frames.copy()
+    for i in range(len(out)):
+        v = int(out[i])
+        if v < 0 or (v % 12) in allowed_pcs:
+            continue
+        for delta in range(1, max_distance + 1):
+            for sign in (-1, 1):
+                candidate = v + sign * delta
+                if 0 <= candidate <= 127 and (candidate % 12) in allowed_pcs:
+                    out[i] = candidate
+                    break
+            else:
+                continue
+            break
+    return out
+
+
 def frames_to_part(
     times_sec: np.ndarray,
     pitch_hz: np.ndarray,
@@ -281,6 +384,8 @@ def frames_to_part(
     pitch_smoothing_window: int = 15,
     rest_bridge_frames: int = 6,
     min_merge_frames: int = 8,
+    enable_key_snap: bool = True,
+    key_snap_max_distance: int = 2,
     min_sixteenths: int = 1,
 ) -> stream.Part:
     """Collapse frame-level pitch into a quantised monophonic Part.
@@ -298,10 +403,16 @@ def frames_to_part(
        to N frames bounded by the same pitch on both sides are filled
        with that pitch. Fixes longer confidence dips inside held notes
        that the median filter can't reach.
-    5. Group into runs, then **merge any run shorter than
+    5. **Key-aware snapping** (when ``enable_key_snap``): Krumhansl-
+       Schmuckler detects the best-matching major/minor key from the
+       pitch-class histogram, then any out-of-key frame within
+       ``key_snap_max_distance`` semitones of an in-key pitch is pulled
+       onto that pitch. Kills chromatic passing tones left over from
+       CREPE's faithful-to-the-Hz rounding at fast transitions.
+    6. Group into runs, then **merge any run shorter than
        ``min_merge_frames`` into its longer neighbour** — collapses
        scoop transitions into the target note.
-    6. Emit music21 notes/rests, ``makeMeasures`` into 4/4.
+    7. Emit music21 notes/rests, ``makeMeasures`` into 4/4.
     """
     if tempo_bpm <= 0:
         raise ValueError(f"tempo_bpm must be positive, got {tempo_bpm}")
@@ -329,6 +440,13 @@ def frames_to_part(
         )
 
     midi_frames = _bridge_short_rest_gaps(midi_frames, rest_bridge_frames)
+
+    if enable_key_snap:
+        allowed_pcs = _detect_scale_pitch_classes(midi_frames)
+        if allowed_pcs is not None:
+            midi_frames = _snap_to_scale(
+                midi_frames, allowed_pcs, max_distance=key_snap_max_distance
+            )
 
     # Group consecutive frames with the same value into runs.
     runs: list[tuple[int, int]] = []  # (midi_or_-1, frame_count)

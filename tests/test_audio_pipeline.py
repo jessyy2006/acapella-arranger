@@ -19,7 +19,9 @@ from src.data.vocab import REST, VOCAB_SIZE, token_to_pitch
 from src.pipeline.audio_to_midi import (
     _TARGET_SR,
     _bridge_short_rest_gaps,
+    _detect_scale_pitch_classes,
     _merge_short_runs,
+    _snap_to_scale,
     extract_lead_tokens,
     frames_to_part,
     pitch_track,
@@ -152,6 +154,56 @@ class TestBridgeShortRestGaps:
         frames = np.array([68, 68, -1, -1, 70, 70], dtype=np.int32)
         bridged = _bridge_short_rest_gaps(frames, max_gap=6)
         assert (bridged == frames).all()
+
+
+_C_MAJOR_PCS = frozenset({0, 2, 4, 5, 7, 9, 11})
+
+
+class TestSnapToScale:
+    """Cover the key-aware snap helper added for issue 001."""
+
+    def test_snaps_out_of_key_to_nearest_scale_degree(self):
+        # C (60), C# (61 — out of key), D (62), E (64).
+        frames = np.array([60, 61, 62, 64], dtype=np.int32)
+        snapped = _snap_to_scale(frames, _C_MAJOR_PCS)
+        # C# should snap to C (60) or D (62) — both are ±1 away.
+        assert snapped[1] in (60, 62)
+        # The in-key pitches are untouched.
+        assert snapped.tolist()[::2] == [60, 62], snapped.tolist()
+
+    def test_leaves_in_key_pitches_alone(self):
+        frames = np.array([60, 62, 64, 65, 67, 69, 71], dtype=np.int32)
+        snapped = _snap_to_scale(frames, _C_MAJOR_PCS)
+        assert (snapped == frames).all()
+
+    def test_leaves_rests_alone(self):
+        frames = np.array([60, -1, -1, 61, -1, 64], dtype=np.int32)
+        snapped = _snap_to_scale(frames, _C_MAJOR_PCS)
+        # Rest sentinels must survive, the C# in the middle moves.
+        assert snapped[1] == -1 and snapped[2] == -1 and snapped[4] == -1
+        assert snapped[3] in (60, 62)
+
+
+class TestDetectScale:
+    """Cover Krumhansl-Schmuckler key detection."""
+
+    def test_detects_c_major_from_scale_frames(self):
+        # Long stretches on each C-major tone — tonic gets the most weight.
+        frames = np.concatenate([
+            np.full(40, 60, dtype=np.int32),   # C
+            np.full(20, 64, dtype=np.int32),   # E
+            np.full(20, 67, dtype=np.int32),   # G
+            np.full(10, 62, dtype=np.int32),   # D
+            np.full(10, 65, dtype=np.int32),   # F
+            np.full(10, 69, dtype=np.int32),   # A
+            np.full(10, 71, dtype=np.int32),   # B
+        ])
+        pcs = _detect_scale_pitch_classes(frames)
+        assert pcs == _C_MAJOR_PCS, pcs
+
+    def test_returns_none_when_too_sparse(self):
+        frames = np.array([60, 64, 67], dtype=np.int32)  # < min_frames=20
+        assert _detect_scale_pitch_classes(frames) is None
 
 
 class TestMergeShortRuns:
