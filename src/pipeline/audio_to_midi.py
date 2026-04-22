@@ -630,17 +630,20 @@ def extract_lead_tokens(
     crepe_model: _CrepeModel = "full",
     confidence_threshold: float = 0.5,
     demucs_model: str = "htdemucs_ft",
-) -> list[int]:
-    """End-to-end: audio file -> lead-melody token list.
+) -> tuple[list[int], float]:
+    """End-to-end: audio file -> ``(lead_tokens, tempo_used_bpm)``.
 
     Chains :func:`isolate_vocals`, :func:`pitch_track`,
     :func:`frames_to_part`, and the tokenizer's :func:`encode_part`.
     If ``tempo_bpm`` is ``None``, estimates tempo with
-    ``librosa.beat.beat_track`` on the isolated vocal.
+    ``librosa.beat.beat_track`` on the isolated vocal. The returned
+    tempo is the value that was actually used to quantise — callers
+    that need to map section windows onto the token stream
+    (``src/pipeline/sections.tokens_for_section_window``) depend on it.
 
-    Returns a token list in the same vocabulary the harmony model was
-    trained on — framed by SOS/EOS, BAR-delimited measures, REST tokens
-    for silent / low-confidence regions.
+    The token list follows the vocab in :mod:`src.data.vocab` —
+    SOS/EOS framing, BAR-delimited measures, REST tokens for silent or
+    low-confidence regions.
     """
     audio_path = Path(audio_path)
     if not audio_path.is_file():
@@ -670,4 +673,4 @@ def extract_lead_tokens(
     )
     tokens = encode_part(part)
     logger.info("extracted %d tokens from %s", len(tokens), audio_path.name)
-    return tokens
+    return tokens, float(tempo_bpm)

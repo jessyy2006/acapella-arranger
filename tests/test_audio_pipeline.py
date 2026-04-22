@@ -328,10 +328,11 @@ class TestFullPipeline:
         """
         sine_path = tmp_path / "sine_a4.wav"
         _write_sine(sine_path, freq=440.0, duration_s=3.0)
-        tokens = extract_lead_tokens(
+        tokens, tempo = extract_lead_tokens(
             sine_path, tempo_bpm=120.0, device="cpu",
             crepe_model="tiny", demucs_model="htdemucs",
         )
         assert isinstance(tokens, list)
+        assert tempo == 120.0
         for t in tokens:
             assert 0 <= t < VOCAB_SIZE

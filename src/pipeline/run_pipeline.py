@@ -21,19 +21,43 @@ Chains:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 from pathlib import Path
 
+import librosa
 import torch
 from music21 import stream
 
 from src.data.tokenizer import decode_part
+from src.data.vocab import EOS, SOS
 from src.eval.evaluate import _build_model, _load_hparams_from_sources, _resolve_device
 from src.pipeline.audio_to_midi import extract_lead_tokens
 from src.pipeline.decode import VOICES, generate_voice_tokens
+from src.pipeline.sections import detect_sections, tokens_for_section_window
 from src.postprocess.voice_leading import apply_voice_leading
 
 logger = logging.getLogger(__name__)
+
+
+def _seed_for_label(label: str) -> int:
+    """Stable 31-bit seed derived from a section label. Identical labels
+    across the same session produce identical generate_voice_tokens
+    output — the only knob the section-aware path uses to guarantee
+    "pattern A repeats."
+    """
+    digest = hashlib.blake2b(label.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, "big") & 0x7FFFFFFF
+
+
+def _strip_framing(tokens: list[int]) -> list[int]:
+    """Drop leading SOS / trailing EOS so per-section streams can be
+    concatenated without producing illegal tokens in the middle of a
+    stitched sequence.
+    """
+    start = 1 if tokens and tokens[0] == SOS else 0
+    end = len(tokens) - 1 if tokens and tokens[-1] == EOS else len(tokens)
+    return tokens[start:end]
 
 
 def _assemble_score(
@@ -110,31 +134,81 @@ def run_pipeline(
     dev = _resolve_device(device)
     logger.info("device=%s", dev)
 
-    lead_tokens = extract_lead_tokens(audio_path, tempo_bpm=tempo_bpm, device=device)
+    lead_tokens, tempo_used = extract_lead_tokens(
+        audio_path, tempo_bpm=tempo_bpm, device=device,
+    )
     if len(lead_tokens) < 3:
         raise RuntimeError(
             f"extracted only {len(lead_tokens)} tokens from {audio_path.name}; "
             "audio may be silent or too short for pitch tracking"
         )
-    logger.info("lead tokens: %d", len(lead_tokens))
+    logger.info("lead tokens: %d (tempo=%.1f bpm)", len(lead_tokens), tempo_used)
 
-    lead_tensor = torch.tensor([lead_tokens], dtype=torch.long, device=dev)
+    # Section detection runs on the original mix (instrumental density
+    # helps delineate verse/chorus). Gracefully degrades to a single
+    # section when detection fails or the clip is too short.
+    audio_for_sections, sr_for_sections = librosa.load(str(audio_path), sr=None, mono=True)
+    sections = detect_sections(audio_for_sections, sr_for_sections)
+    unique_labels = sorted({label for label, _, _ in sections})
+    logger.info(
+        "sections: %d total, %d unique label(s): %s",
+        len(sections), len(unique_labels),
+        [(lbl, round(s, 1), round(e, 1)) for lbl, s, e in sections],
+    )
 
     model = _load_model(checkpoint_path, model_class, dev)
 
-    generated: dict[str, list[int]] = {}
-    for voice in VOICES:
-        # Bass gets stricter temperatures so it reads as a pop bass line
-        # (long held root notes) instead of mimicking the upper voices.
-        v_temp = bass_temperature if voice == "b" else temperature
-        v_dur_temp = bass_duration_temperature if voice == "b" else duration_temperature
-        generated[voice] = generate_voice_tokens(
-            model, lead_tensor, voice, max_len, dev,
-            temperature=v_temp,
-            duration_temperature=v_dur_temp,
-            top_k=top_k,
+    # Generate SATB once per unique label (using that label's first
+    # occurrence as the conditioning lead), then paste the cached
+    # tokens across every occurrence of the same label. This is the
+    # "verse 1 == verse 2" primitive the user asked for.
+    def _v_temp(voice: str) -> tuple[float, float]:
+        return (
+            (bass_temperature, bass_duration_temperature)
+            if voice == "b"
+            else (temperature, duration_temperature)
         )
-        logger.info("voice %s: %d tokens", voice, len(generated[voice]))
+
+    generated_by_label: dict[str, dict[str, list[int]]] = {}
+    for label in unique_labels:
+        first_start, first_end = next((s, e) for lbl, s, e in sections if lbl == label)
+        slice_start, slice_end = tokens_for_section_window(
+            lead_tokens, tempo_used, first_start, first_end,
+        )
+        section_tokens = lead_tokens[slice_start:slice_end] if slice_end > slice_start else lead_tokens
+        # Re-frame with SOS/EOS so the model sees a well-formed sequence.
+        if not section_tokens or section_tokens[0] != SOS:
+            section_tokens = [SOS] + section_tokens
+        if section_tokens[-1] != EOS:
+            section_tokens = section_tokens + [EOS]
+        section_tensor = torch.tensor([section_tokens], dtype=torch.long, device=dev)
+        seed = _seed_for_label(label)
+        gen_for_label: dict[str, list[int]] = {}
+        for voice in VOICES:
+            v_temp, v_dur_temp = _v_temp(voice)
+            gen_for_label[voice] = generate_voice_tokens(
+                model, section_tensor, voice, max_len, dev,
+                temperature=v_temp,
+                duration_temperature=v_dur_temp,
+                top_k=top_k,
+                seed=seed,
+            )
+        generated_by_label[label] = gen_for_label
+        logger.info(
+            "label %s: %s", label,
+            {v: len(gen_for_label[v]) for v in VOICES},
+        )
+
+    # Stitch per-voice streams in section order. Drop interior SOS/EOS
+    # so the concatenated output has one SOS at the start and one EOS
+    # at the end.
+    generated: dict[str, list[int]] = {v: [SOS] for v in VOICES}
+    for label, _, _ in sections:
+        for voice in VOICES:
+            generated[voice].extend(_strip_framing(generated_by_label[label][voice]))
+    for voice in VOICES:
+        generated[voice].append(EOS)
+        logger.info("voice %s: %d tokens (stitched)", voice, len(generated[voice]))
 
     if voice_leading:
         generated = apply_voice_leading(
