@@ -244,6 +244,7 @@ def apply_voice_leading(
     enable_range_clamp: bool = True,
     enable_parallel_detect: bool = True,
     bass_coalesce_min_sixteenths: int = 3,
+    upper_coalesce_min_sixteenths: int = 2,
 ) -> dict[str, list[int]]:
     """Post-process per-voice token sequences before MIDI export.
 
@@ -263,9 +264,13 @@ def apply_voice_leading(
         directly.
     bass_coalesce_min_sixteenths
         Absorb any bass note shorter than this many sixteenths into its
-        longer neighbour, after merging adjacent same-pitch bass notes.
-        Default 4 (a quarter note) targets pop-bass conventions. Set to
-        0 to disable the coalesce and keep the raw model output.
+        longer neighbour. Default 3 (a dotted-8th) targets pop-bass
+        conventions. Set to 0 to disable the bass coalesce.
+    upper_coalesce_min_sixteenths
+        Same coalesce applied to S/A/T. Default 2 (an 8th note) is
+        looser than the bass floor so upper voices keep more rhythmic
+        motion while still dropping stochastic 16ths. Set to 0 to
+        disable. See ``docs/issues/004``.
 
     Returns
     -------
@@ -284,15 +289,25 @@ def apply_voice_leading(
             lo, hi = SATB_RANGES[voice]
             out[voice] = _clamp_tokens(out[voice], lo, hi)
 
-    if bass_coalesce_min_sixteenths > 0 and "b" in out:
-        before = len(out["b"])
-        out["b"] = coalesce_voice_tokens(
-            out["b"], min_sixteenths=bass_coalesce_min_sixteenths
-        )
-        logger.info(
-            "bass coalesce: %d -> %d tokens (min_sixteenths=%d)",
-            before, len(out["b"]), bass_coalesce_min_sixteenths,
-        )
+    # Per-voice coalesce floors: bass is tighter than the upper voices
+    # because bass convention is "hold the root" while S/A/T still need
+    # some rhythmic motion.
+    coalesce_floors = {
+        "s": upper_coalesce_min_sixteenths,
+        "a": upper_coalesce_min_sixteenths,
+        "t": upper_coalesce_min_sixteenths,
+        "b": bass_coalesce_min_sixteenths,
+    }
+    for voice, min_sx in coalesce_floors.items():
+        if min_sx > 0 and voice in out:
+            before = len(out[voice])
+            out[voice] = coalesce_voice_tokens(
+                out[voice], min_sixteenths=min_sx
+            )
+            logger.info(
+                "%s coalesce: %d -> %d tokens (min_sixteenths=%d)",
+                voice, before, len(out[voice]), min_sx,
+            )
 
     if enable_parallel_detect:
         violations = detect_parallel_motion(out)

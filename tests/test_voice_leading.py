@@ -85,10 +85,14 @@ class TestRangeClamp:
             t=[pitch_to_token(50), DUR_16TH, BAR, REST, DUR_16TH, PAD],
             b=[pitch_to_token(40), DUR_16TH, BAR, REST, DUR_16TH, PAD],
         )
-        # Disable the bass coalesce — this test is isolating the range-
-        # clamp behaviour, and coalesce would merge the 16th-note events
-        # and rewrite the token stream.
-        out = apply_voice_leading(tokens, bass_coalesce_min_sixteenths=0)
+        # Disable both coalesce paths — this test is isolating the
+        # range-clamp behaviour, and per-voice coalesce would merge the
+        # 16th-note events and rewrite the token stream.
+        out = apply_voice_leading(
+            tokens,
+            bass_coalesce_min_sixteenths=0,
+            upper_coalesce_min_sixteenths=0,
+        )
         for v in VOICES:
             # Non-pitch tokens unchanged at the same positions.
             assert out[v][1] == DUR_16TH
@@ -196,7 +200,14 @@ class TestParallelDetection:
             b=[pitch_to_token(40), DUR_16TH, pitch_to_token(40), DUR_16TH],
         )
         with caplog.at_level(logging.WARNING, logger="src.postprocess.voice_leading"):
-            apply_voice_leading(tokens)
+            # Disable coalesce — the 16th-note pairs this test uses
+            # would otherwise collapse into single notes and there'd
+            # be no moving voices to detect parallels between.
+            apply_voice_leading(
+                tokens,
+                bass_coalesce_min_sixteenths=0,
+                upper_coalesce_min_sixteenths=0,
+            )
         assert any("parallel fifth" in rec.message for rec in caplog.records)
 
     def test_disable_parallel_detect_produces_no_log(self, caplog):
@@ -273,3 +284,84 @@ class TestCoalesceVoiceTokens:
         out = coalesce_voice_tokens(tokens, min_sixteenths=1)
         # Rest must survive — same-pitch coalesce doesn't merge rest with note.
         assert REST in out, out
+
+
+class TestCoalesceAllVoices:
+    """Cover the generalised per-voice coalesce in ``apply_voice_leading``."""
+
+    def test_upper_voices_also_coalesce(self):
+        # All four voices share a "many 16ths" pattern; with default
+        # upper_coalesce_min_sixteenths=2 the 16ths on S/A/T should get
+        # absorbed just like they do on bass.
+        def rapid_stream(midi: int) -> list[int]:
+            p = pitch_to_token(midi)
+            stream = [SOS]
+            for _ in range(8):
+                stream.extend([p, _dur(1)])  # 8 x 16th on the same pitch
+            stream.append(EOS)
+            return stream
+
+        tokens = {
+            "s": rapid_stream(60),
+            "a": rapid_stream(55),
+            "t": rapid_stream(50),
+            "b": rapid_stream(40),
+        }
+        out = apply_voice_leading(tokens)
+        # Each voice's 8 x 16th stream should coalesce into a single
+        # whole-note event — the output should be shorter than the input
+        # for every voice.
+        for voice in ("s", "a", "t", "b"):
+            assert len(out[voice]) < len(tokens[voice]), (
+                f"{voice} should shorten after coalesce; before={len(tokens[voice])}, "
+                f"after={len(out[voice])}"
+            )
+
+    def test_upper_coalesce_respects_threshold(self):
+        # Upper voices default to min_sixteenths=2, bass to 3. A series
+        # of dotted-8ths (3 sixteenths) should survive on bass but not
+        # on the upper voices... wait, bass threshold is 3 so >= 3
+        # survives; upper threshold is 2 so >= 2 also survives. Build a
+        # single 16th (dur=1) on each voice — all should absorb it.
+        def single_blip(midi: int) -> list[int]:
+            p = pitch_to_token(midi)
+            return [SOS, p, _dur(1), pitch_to_token(midi + 2), _dur(8), EOS]
+
+        tokens = {
+            "s": single_blip(60),
+            "a": single_blip(55),
+            "t": single_blip(50),
+            "b": single_blip(40),
+        }
+        out = apply_voice_leading(tokens)
+        # Each voice should end up with one *unique* pitch (the longer
+        # neighbour) after the 16th is absorbed. The coalesce may split
+        # a 9-sixteenth event into 8 + 1 across buckets, so the same
+        # pitch token can appear more than once — what matters is that
+        # the shorter neighbour's pitch is gone.
+        for voice in ("s", "a", "t", "b"):
+            pitches = {t for t in out[voice] if pitch_to_token(36) <= t <= pitch_to_token(80)}
+            assert len(pitches) == 1, (
+                f"{voice}: expected 1 unique pitch, got {pitches} in {out[voice]}"
+            )
+
+    def test_coalesce_can_be_disabled_per_kind(self):
+        # Raw 16th-note stream; disabling both coalesce paths should
+        # leave the S/A/T and bass outputs alone (aside from identity
+        # range-clamp / parallel-detect).
+        def raw(midi: int) -> list[int]:
+            p = pitch_to_token(midi)
+            return [SOS, p, _dur(1), p, _dur(1), EOS]
+
+        tokens = {
+            "s": raw(60), "a": raw(55), "t": raw(50), "b": raw(40),
+        }
+        out = apply_voice_leading(
+            tokens,
+            bass_coalesce_min_sixteenths=0,
+            upper_coalesce_min_sixteenths=0,
+        )
+        for voice in ("s", "a", "t", "b"):
+            assert out[voice] == tokens[voice], (
+                f"{voice} should be unchanged when coalesce is disabled"
+            )

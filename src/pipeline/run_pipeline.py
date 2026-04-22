@@ -108,14 +108,17 @@ def run_pipeline(
     max_len: int = 256,
     tempo_bpm: float | None = None,
     device: str | None = None,
-    # Bass-specific sampling overrides. The global ``temperature`` and
-    # ``duration_temperature`` defaults were tuned to stop S/A/T from
-    # collapsing onto the modal quarter-note bucket — the exact behaviour
-    # *bass* should have. Pop bass conventions want long held notes and
-    # stable pitches, so we drop both temperatures on bass only. See
-    # ``docs/issues/002-bass-voice-too-short-and-jumpy.md``.
+    # Per-voice sampling overrides. The global ``temperature`` and
+    # ``duration_temperature`` defaults were tuned against chorale /
+    # a cappella listening tests; on pop material each voice wants a
+    # stricter-than-global regime. See ``docs/issues/002`` (bass) and
+    # ``docs/issues/004`` (S/A/T). Bass wants the tightest settings
+    # because bass convention is "hold the root"; upper voices are
+    # slightly looser so they still have rhythmic motion.
     bass_temperature: float = 0.3,
     bass_duration_temperature: float = 0.7,
+    satb_upper_temperature: float = 0.35,
+    satb_upper_duration_temperature: float = 0.8,
 ) -> Path:
     """Arrange ``audio_path`` as an SATB MIDI. Returns the output path.
 
@@ -163,11 +166,16 @@ def run_pipeline(
     # tokens across every occurrence of the same label. This is the
     # "verse 1 == verse 2" primitive the user asked for.
     def _v_temp(voice: str) -> tuple[float, float]:
-        return (
-            (bass_temperature, bass_duration_temperature)
-            if voice == "b"
-            else (temperature, duration_temperature)
-        )
+        # Bass gets its own tighter config; S/A/T share a single
+        # upper-voice override. The legacy ``temperature`` /
+        # ``duration_temperature`` kwargs remain callable but no
+        # longer drive per-voice sampling — callers that want to
+        # widen the upper voices should raise
+        # ``satb_upper_temperature`` / ``satb_upper_duration_temperature``
+        # directly.
+        if voice == "b":
+            return (bass_temperature, bass_duration_temperature)
+        return (satb_upper_temperature, satb_upper_duration_temperature)
 
     generated_by_label: dict[str, dict[str, list[int]]] = {}
     for label in unique_labels:
@@ -254,6 +262,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--bass-duration-temperature", type=float, default=0.7,
                    help="Duration temperature for bass only. Default 0.7 "
                         "biases bass toward long held notes.")
+    p.add_argument("--satb-upper-temperature", type=float, default=0.35,
+                   help="Pitch-sampling temperature shared by S/A/T. Default "
+                        "0.35 — colder than the legacy --temperature to keep "
+                        "upper voices from generating a new note every 16th. "
+                        "See docs/issues/004.")
+    p.add_argument("--satb-upper-duration-temperature", type=float, default=0.8,
+                   help="Duration temperature shared by S/A/T. Default 0.8 "
+                        "concentrates durations above the 16th-note bucket "
+                        "while keeping more variety than bass's 0.7.")
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument("--max-len", type=int, default=256)
     p.add_argument("--tempo-bpm", type=float, default=None)
@@ -276,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
         duration_temperature=args.duration_temperature,
         bass_temperature=args.bass_temperature,
         bass_duration_temperature=args.bass_duration_temperature,
+        satb_upper_temperature=args.satb_upper_temperature,
+        satb_upper_duration_temperature=args.satb_upper_duration_temperature,
         top_k=args.top_k,
         max_len=args.max_len,
         tempo_bpm=args.tempo_bpm,

@@ -67,13 +67,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="Pitch-position sampling temperature. 0.0 = greedy.")
     p.add_argument("--duration-temperature", type=float, default=1.1,
                    help="Temperature override for duration-token positions.")
-    # Bass-only overrides — the global temperatures are tuned for S/A/T,
-    # which need variety; bass needs the opposite (long held root notes).
-    # See docs/issues/002-bass-voice-too-short-and-jumpy.md.
+    # Per-voice overrides — the global temperatures are the chorale
+    # defaults; on pop material each voice wants a tighter regime.
+    # See docs/issues/002 (bass) and docs/issues/004 (S/A/T).
     p.add_argument("--bass-temperature", type=float, default=0.3,
                    help="Pitch temperature for bass only (default: stable root notes).")
     p.add_argument("--bass-duration-temperature", type=float, default=0.7,
                    help="Duration temperature for bass only (default: long held notes).")
+    p.add_argument("--satb-upper-temperature", type=float, default=0.35,
+                   help="Pitch temperature shared by S/A/T (default: cleaner than chorale).")
+    p.add_argument("--satb-upper-duration-temperature", type=float, default=0.8,
+                   help="Duration temperature shared by S/A/T (default: fewer short notes).")
     p.add_argument("--top-k", type=int, default=10,
                    help="Restrict sampling to top-k tokens; 0 or None disables.")
     p.add_argument("--suffix", type=str, default="",
@@ -110,13 +114,17 @@ def main(argv: list[str] | None = None) -> int:
 
     generated: dict[str, list[int]] = {}
     for voice in _VOICES:
-        # Bass gets stricter sampling than S/A/T — it's a single voice
-        # with different aesthetic expectations (hold the root, don't
-        # dance around). See issue 002.
-        v_temp = args.bass_temperature if voice == "b" else args.temperature
-        v_dur_temp = (
-            args.bass_duration_temperature if voice == "b" else args.duration_temperature
-        )
+        # Per-voice sampling: bass holds root notes (tight temperatures);
+        # S/A/T share an upper-voice override that's colder than the
+        # legacy chorale default. Legacy --temperature / --duration-temperature
+        # flags stay callable but no longer drive per-voice sampling —
+        # raise --satb-upper-temperature to widen upper voices.
+        if voice == "b":
+            v_temp = args.bass_temperature
+            v_dur_temp = args.bass_duration_temperature
+        else:
+            v_temp = args.satb_upper_temperature
+            v_dur_temp = args.satb_upper_duration_temperature
         generated[voice] = generate_voice_tokens(
             model, lead, voice, args.max_len, device,
             temperature=v_temp,
