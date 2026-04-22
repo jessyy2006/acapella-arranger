@@ -34,6 +34,11 @@ Post-v1 tuning after listening verdict on `outputs/smoke_input.mp3`
 - **Short-run merging** absorbs any run shorter than ~80 ms into its
   longer neighbour. Collapses scoops / vibrato wobble into the target
   note the singer actually held.
+- **Amplitude gate**. CREPE's confidence score tells you "is this
+  signal periodic?" but not "is the singer audible?" Demucs bleed,
+  reverb tails, or quiet instruments can have high periodicity and
+  falsely fill a genuine pause with notes. We compute per-frame RMS
+  on the isolated vocal stem (dBFS) and force REST below -50 dB.
 - **Key-aware snapping** (Krumhansl-Schmuckler). The 3 fixes above
   clean frame-level jitter but can't correct genuinely chromatic pitch
   labels left over from rapid singer transitions (CREPE rounds Hz to
@@ -159,11 +164,14 @@ def pitch_track(
     device: str | torch.device | None = None,
     *,
     model_size: _CrepeModel = "full",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Run torchcrepe on ``audio``, returning ``(times_sec, pitch_hz, confidence)``.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Run torchcrepe on ``audio`` and return frame-aligned arrays.
 
-    The input is resampled to 16 kHz mono internally; the three returned
-    arrays are aligned 1-D arrays with one entry per 10-ms frame.
+    Returns ``(times_sec, pitch_hz, confidence, amplitude_db)``. All four
+    are 1-D arrays with one entry per 10-ms frame. ``amplitude_db`` is
+    the per-frame RMS of the mono, 16 kHz input converted to dBFS; used
+    downstream to gate pauses where CREPE would otherwise report a
+    confident pitch on reverb tail or Demucs bleed.
     """
     dev = _pick_device(device if isinstance(device, str) or device is None else str(device))
 
@@ -187,8 +195,26 @@ def pitch_track(
     )
     pitch_np = pitch[0].cpu().numpy().astype(np.float32)
     confidence_np = periodicity[0].cpu().numpy().astype(np.float32)
-    times = np.arange(len(pitch_np), dtype=np.float32) * (_CREPE_HOP / _TARGET_SR)
-    return times, pitch_np, confidence_np
+
+    # Per-frame RMS in dBFS, aligned to the CREPE frame grid. Use a
+    # 20 ms analysis window (2 * hop) so the RMS picks up short bursts.
+    rms = librosa.feature.rms(
+        y=audio, frame_length=_CREPE_HOP * 2, hop_length=_CREPE_HOP, center=True,
+    )[0]
+    amplitude_db = librosa.amplitude_to_db(rms + 1e-12, ref=1.0).astype(np.float32)
+
+    # Align lengths — librosa's centered framing sometimes emits one more
+    # frame than CREPE; trim/pad to match.
+    n = len(pitch_np)
+    if len(amplitude_db) > n:
+        amplitude_db = amplitude_db[:n]
+    elif len(amplitude_db) < n:
+        amplitude_db = np.pad(
+            amplitude_db, (0, n - len(amplitude_db)), constant_values=amplitude_db[-1]
+        )
+
+    times = np.arange(n, dtype=np.float32) * (_CREPE_HOP / _TARGET_SR)
+    return times, pitch_np, confidence_np, amplitude_db
 
 
 def _hz_to_midi_int(pitch_hz: np.ndarray) -> np.ndarray:
@@ -380,8 +406,10 @@ def frames_to_part(
     tempo_bpm: float,
     *,
     confidence_threshold: float = 0.5,
+    amplitude_db: np.ndarray | None = None,
+    amplitude_threshold_db: float = -50.0,
     smoothing_window: int = 5,
-    pitch_smoothing_window: int = 15,
+    pitch_smoothing_window: int = 21,
     rest_bridge_frames: int = 6,
     min_merge_frames: int = 8,
     enable_key_snap: bool = True,
@@ -394,7 +422,11 @@ def frames_to_part(
 
     1. Median-filter *confidence* (Hz-level median filter is a no-op for
        our purposes — integer-MIDI smoothing below is more effective).
-    2. Convert Hz -> int MIDI, mark sub-threshold frames as REST (-1).
+    2. Convert Hz -> int MIDI, mark frames as REST (-1) when confidence
+       is below ``confidence_threshold`` OR ``amplitude_db`` is below
+       ``amplitude_threshold_db``. The amplitude gate catches pauses
+       where Demucs bleed or reverb tail gives CREPE a confident but
+       inaudible pitch.
     3. **Wide median filter on MIDI integers** (``pitch_smoothing_window``,
        default ~150 ms): kills semitone-boundary flicker that makes
        scoops read as flats/sharps and subsumes 1-2 frame REST blips
@@ -424,9 +456,15 @@ def frames_to_part(
         confidence = medfilt(confidence, kernel_size=win)
 
     midi_frames = _hz_to_midi_int(pitch_hz)
-    midi_frames = np.where(confidence >= confidence_threshold, midi_frames, -1).astype(
-        np.int32
-    )
+    is_voiced = confidence >= confidence_threshold
+    if amplitude_db is not None:
+        if len(amplitude_db) != len(midi_frames):
+            raise ValueError(
+                f"amplitude_db length {len(amplitude_db)} must match pitch_hz "
+                f"length {len(midi_frames)}"
+            )
+        is_voiced = is_voiced & (amplitude_db >= amplitude_threshold_db)
+    midi_frames = np.where(is_voiced, midi_frames, -1).astype(np.int32)
 
     # Wide median filter in MIDI-integer space — the key fix for scoops.
     if pitch_smoothing_window >= 3 and len(midi_frames) >= pitch_smoothing_window:
@@ -529,11 +567,14 @@ def extract_lead_tokens(
         logger.info("estimated tempo: %.1f bpm", tempo_bpm)
 
     logger.info("pitch-tracking with torchcrepe (model=%s)", crepe_model)
-    times, pitch_hz, conf = pitch_track(vocal, sr, device=device, model_size=crepe_model)
+    times, pitch_hz, conf, amp_db = pitch_track(
+        vocal, sr, device=device, model_size=crepe_model
+    )
 
     part = frames_to_part(
         times, pitch_hz, conf, tempo_bpm,
         confidence_threshold=confidence_threshold,
+        amplitude_db=amp_db,
     )
     tokens = encode_part(part)
     logger.info("extracted %d tokens from %s", len(tokens), audio_path.name)

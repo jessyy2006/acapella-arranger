@@ -63,8 +63,10 @@ def _run_sine_through_pitch_and_quantise(
     """
     from src.data.tokenizer import encode_part
 
-    times, pitch_hz, conf = pitch_track(audio, sr, device="cpu", model_size="tiny")
-    part = frames_to_part(times, pitch_hz, conf, tempo_bpm)
+    times, pitch_hz, conf, amp_db = pitch_track(
+        audio, sr, device="cpu", model_size="tiny"
+    )
+    part = frames_to_part(times, pitch_hz, conf, tempo_bpm, amplitude_db=amp_db)
     return encode_part(part)
 
 
@@ -133,6 +135,54 @@ class TestExtractLeadTokens:
         missing = tmp_path / "does_not_exist.mp3"
         with pytest.raises(FileNotFoundError):
             extract_lead_tokens(missing, device="cpu")
+
+
+class TestAmplitudeGate:
+    """Cover the amplitude-based REST gate in ``frames_to_part``.
+
+    Regression for issue 001: Demucs reverb/bleed kept CREPE confidence
+    high during pop-song pauses, so the Lead was never silent. The
+    amplitude gate catches frames that are confident but inaudibly quiet.
+    """
+
+    def test_quiet_frames_become_rest_even_with_high_confidence(self):
+        # 30 frames @ CREPE hop = 300 ms at 100 bpm tempo.
+        n = 30
+        times = np.arange(n, dtype=np.float32) * (_TARGET_SR / 16000 * 0.01)
+        # Constant Hz (A4 = 440) and high confidence everywhere.
+        pitch_hz = np.full(n, 440.0, dtype=np.float32)
+        conf = np.full(n, 0.95, dtype=np.float32)
+        # Amplitude: loud for the first half, silent for the second.
+        amp_db = np.concatenate([
+            np.full(n // 2, -20.0, dtype=np.float32),
+            np.full(n - n // 2, -80.0, dtype=np.float32),
+        ])
+        part = frames_to_part(
+            times, pitch_hz, conf, tempo_bpm=100.0,
+            amplitude_db=amp_db, amplitude_threshold_db=-50.0,
+            # Disable key-snap to keep the test focused on the gate.
+            enable_key_snap=False,
+        )
+        elements = list(part.recurse().notesAndRests)
+        # Must contain at least one Rest — the quiet half must drop out.
+        assert any(el.isRest for el in elements), (
+            f"quiet-half frames should produce at least one Rest; got {elements}"
+        )
+
+    def test_missing_amplitude_leaves_gating_unchanged(self):
+        # Without amplitude_db, behaviour should match pre-gate pipeline
+        # (only confidence threshold applies).
+        n = 30
+        times = np.arange(n, dtype=np.float32) * 0.01
+        pitch_hz = np.full(n, 440.0, dtype=np.float32)
+        conf = np.full(n, 0.95, dtype=np.float32)
+        part = frames_to_part(
+            times, pitch_hz, conf, tempo_bpm=100.0,
+            amplitude_db=None,
+            enable_key_snap=False,
+        )
+        notes = list(part.recurse().notes)
+        assert len(notes) >= 1, "confident pitch with no amplitude gate must emit a note"
 
 
 class TestBridgeShortRestGaps:
