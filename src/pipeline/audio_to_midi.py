@@ -421,7 +421,7 @@ def frames_to_part(
     confidence_threshold: float = 0.5,
     amplitude_db: np.ndarray | None = None,
     amplitude_threshold_db: float = -50.0,
-    amplitude_relative_db: float = 30.0,
+    amplitude_relative_db: float = 22.0,
     smoothing_window: int = 5,
     pitch_smoothing_window: int = 21,
     rest_bridge_frames: int = 6,
