@@ -39,7 +39,7 @@ WORKDIR /home/user/app
 # basic tier is CPU-only, and the default torch wheel pulls a
 # ~900 MB CUDA variant that blows past the build timeout.
 COPY --chown=user requirements.txt ./
-RUN pip install --user --index-url https://download.pytorch.org/whl/cpu torch && \
+RUN pip install --user --index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
     pip install --user -r requirements.txt
 
 # Now copy the application source. Everything under the project
