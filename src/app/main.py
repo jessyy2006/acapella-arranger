@@ -290,19 +290,46 @@ def _render_env_error(exc: ImportError) -> None:
     Triggered when a first-party or third-party import at module load
     raised — almost always because the user launched Streamlit from
     ``base`` / a non-project env and ``librosa`` (or a peer) isn't
-    installed. Names the missing module, the interpreter that's
-    running, and the exact command sequence to recover.
+    installed, or (on HF Spaces) because the container layout
+    doesn't have ``src/`` where the app expects it.
+
+    Prints ``exc.name``, the full ``str(exc)``, the interpreter,
+    ``sys.path``, and a shallow listing of ``_PROJECT_ROOT`` so we
+    can distinguish "wrong env" from "wrong filesystem layout".
     """
     st.error(
         "The app is running in a Python environment that's missing a "
         "required dependency."
     )
-    missing = getattr(exc, "name", None) or str(exc)
+    missing_name = getattr(exc, "name", None)
+    missing_repr = repr(exc)
+    project_listing = "<_PROJECT_ROOT does not exist>"
+    if _PROJECT_ROOT.is_dir():
+        try:
+            project_listing = ", ".join(
+                sorted(p.name for p in _PROJECT_ROOT.iterdir())
+            )
+        except OSError as list_exc:  # pragma: no cover — defensive
+            project_listing = f"<listing failed: {list_exc}>"
+
+    src_layout = "<missing src/>"
+    src_dir = _PROJECT_ROOT / "src"
+    if src_dir.is_dir():
+        try:
+            src_layout = ", ".join(sorted(p.name for p in src_dir.iterdir()))
+        except OSError as list_exc:  # pragma: no cover
+            src_layout = f"<listing failed: {list_exc}>"
+
     st.markdown(
         f"""
-- **Missing module**: `{missing}`
+- **Missing (exc.name)**: `{missing_name}`
+- **Exception**: `{missing_repr}`
 - **Interpreter in use**: `{sys.executable}`
-- **Project root on sys.path**: `{_PROJECT_ROOT}`
+- **Project root**: `{_PROJECT_ROOT}`
+- **Project root on sys.path**: `{str(_PROJECT_ROOT) in sys.path}`
+- **Contents of project root**: `{project_listing}`
+- **Contents of `src/`**: `{src_layout}`
+- **sys.path head**: `{sys.path[:4]}`
 
 **Fix**: quit this process, activate the project env, and relaunch:
 
