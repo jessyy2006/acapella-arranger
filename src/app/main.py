@@ -129,8 +129,9 @@ def _inject_css() -> None:
               letter-spacing: 0.04em;
               margin-bottom: 0.1rem;
           }
-          .aca-stat-value {
-              color: #FFFFFF;
+          .aca-stat-value,
+          .aca-stat-value * {
+              color: #FFFFFF !important;
               font-size: 1.25rem;
               font-weight: 600;
           }
