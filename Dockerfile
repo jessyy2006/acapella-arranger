@@ -40,7 +40,9 @@ WORKDIR /home/user/app
 # ~900 MB CUDA variant that blows past the build timeout.
 COPY --chown=user requirements.txt ./
 RUN pip install --user --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchaudio==2.3.1 && \
-    pip install --user -r requirements.txt
+    pip install --user -r requirements.txt && \
+    pip install --user --force-reinstall --no-deps --index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchaudio==2.3.1 && \
+    python -c "import torch, torchaudio; assert torch.__version__.startswith('2.3.1'), torch.__version__; assert torchaudio.__version__.startswith('2.3.1'), torchaudio.__version__; import torchcrepe; print('versions ok:', torch.__version__, torchaudio.__version__)"
 
 # Now copy the application source. Everything under the project
 # root is fair game; .dockerignore trims anything we don't want
