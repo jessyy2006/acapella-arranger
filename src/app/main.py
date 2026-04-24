@@ -130,7 +130,7 @@ def _inject_css() -> None:
               margin-bottom: 0.1rem;
           }
           .aca-stat-value {
-              color: #0F172A;
+              color: #FFFFFF;
               font-size: 1.25rem;
               font-weight: 600;
           }
