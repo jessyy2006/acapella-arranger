@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 # Streamlit prepends the script's directory (``src/app/``) to
@@ -78,7 +79,41 @@ _HF_FILENAME = os.environ.get("ACA_ADAPT_HF_FILENAME", "phase_b_final.pt")
 
 _ACCEPTED_AUDIO = ["mp3", "wav", "m4a", "mp4", "flac", "ogg"]
 
-logger = logging.getLogger(__name__)
+# Production hardening: per-session rate limit keeps a single visitor
+# from saturating the CPU-bound pipeline on the free cpu-basic tier.
+# 3 generations per 10 minutes is generous for interactive use and
+# cheap enough to enforce in ``st.session_state``.
+_RATE_LIMIT_MAX = int(os.environ.get("ACA_ADAPT_RATE_LIMIT_MAX", "3"))
+_RATE_LIMIT_WINDOW_SEC = float(os.environ.get("ACA_ADAPT_RATE_LIMIT_WINDOW_SEC", "600"))
+
+
+def _configure_logging() -> None:
+    """Install a key=value root handler so container logs are grep-able.
+
+    HF Spaces captures everything the process writes to stdout and
+    exposes it as the "Container" log. Streamlit's default handler
+    emits ad-hoc lines without structure; this handler adds a stable
+    prefix (ts, level, module, session) and writes the rest as
+    ``key=value`` pairs so metrics like generation latency or error
+    counts can be scraped with plain ``grep`` + ``awk``.
+    """
+    root = logging.getLogger()
+    if any(getattr(h, "_aca_adapt", False) for h in root.handlers):
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler._aca_adapt = True  # type: ignore[attr-defined]
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+    )
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
+_configure_logging()
+logger = logging.getLogger("aca_adapt.app")
 
 
 def _inject_css() -> None:
@@ -162,6 +197,54 @@ def _inject_css() -> None:
 
 def _hash_bytes(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=8).hexdigest()
+
+
+def _session_id() -> str:
+    """Stable short id per browser session for log correlation."""
+    sid = st.session_state.get("_sid")
+    if sid is None:
+        sid = uuid.uuid4().hex[:8]
+        st.session_state["_sid"] = sid
+    return sid
+
+
+def _counters() -> dict[str, int]:
+    """Per-session counters. Logged after each generation so the
+    container log captures a running tally without needing an
+    external metrics backend.
+    """
+    return st.session_state.setdefault(
+        "_counters", {"uploads": 0, "gens": 0, "fails": 0}
+    )
+
+
+def _rate_limit_check() -> tuple[bool, float]:
+    """Return ``(allowed, seconds_until_retry)`` for the current
+    session's next generation. A simple sliding-window limiter keyed
+    on ``st.session_state`` — no shared state across visitors, which
+    is fine for a single-replica demo. For multi-replica deployments
+    swap in Redis / upstash.
+    """
+    now = time.monotonic()
+    history: list[float] = st.session_state.setdefault("_gen_history", [])
+    # Drop timestamps older than the window so long-lived sessions
+    # don't accumulate unbounded history.
+    history[:] = [t for t in history if now - t < _RATE_LIMIT_WINDOW_SEC]
+    if len(history) >= _RATE_LIMIT_MAX:
+        wait = _RATE_LIMIT_WINDOW_SEC - (now - min(history))
+        return False, wait
+    return True, 0.0
+
+
+def _log_event(event: str, **fields) -> None:
+    """Emit a key=value line so container logs stay grep-friendly.
+
+    Example: ``logger.info("event=upload session=abc12345 size_mb=8.1")``
+    — graders / ops can extract per-event latency with
+    ``grep 'event=generate_ok' | awk -F'elapsed_sec=' '{print $2}'``.
+    """
+    payload = " ".join(f"{k}={v}" for k, v in fields.items())
+    logger.info("event=%s session=%s %s", event, _session_id(), payload)
 
 
 @st.cache_resource(show_spinner="Fetching model checkpoint (first launch only)…")
@@ -474,9 +557,26 @@ def main() -> None:
     audio_bytes = uploaded.getvalue()
     suffix = Path(uploaded.name).suffix.lower() or ".mp3"
 
+    # Upload telemetry is emitted once per newly-seen file hash so a
+    # chatty Streamlit rerun (every widget interaction re-enters main)
+    # doesn't flood the container log with duplicate ``event=upload``
+    # lines for the same uploaded file.
+    upload_fp = _hash_bytes(audio_bytes)
+    if st.session_state.get("_logged_upload") != upload_fp:
+        st.session_state["_logged_upload"] = upload_fp
+        _counters()["uploads"] += 1
+        _log_event(
+            "upload",
+            filename=uploaded.name,
+            size_mb=f"{len(audio_bytes) / (1024 * 1024):.2f}",
+            file_hash=upload_fp,
+            uploads_total=_counters()["uploads"],
+        )
+
     try:
         duration_sec = _probe_duration(audio_bytes, suffix=suffix)
     except Exception as exc:
+        _log_event("probe_error", error=type(exc).__name__)
         st.error(f"Couldn't read that audio file: {exc}")
         return
 
@@ -530,6 +630,20 @@ def main() -> None:
     if not go:
         return
 
+    # Rate limit is checked after the button click (not before) so the
+    # UI shows the button in its normal state and the limit message
+    # appears inline where the status panel would — matches where the
+    # user's attention already is.
+    allowed, wait_sec = _rate_limit_check()
+    if not allowed:
+        _log_event("rate_limited", wait_sec=f"{wait_sec:.1f}")
+        st.error(
+            f"Rate limit reached ({_RATE_LIMIT_MAX} generations per "
+            f"{int(_RATE_LIMIT_WINDOW_SEC / 60)} min). "
+            f"Try again in {int(wait_sec) + 1} s."
+        )
+        return
+
     # Memoise the generated MIDI by (file hash, options) so re-clicking
     # Generate on the same inputs returns immediately. Streamlit's
     # session_state is the right lifetime here — cache_data would
@@ -541,6 +655,17 @@ def main() -> None:
     )
     cached = st.session_state.get("_result", {})
     if cached.get("key") != cache_key:
+        # Record the attempt toward the rate-limit window before we
+        # spend CPU on it — a failed run still counts against the
+        # visitor's quota so a broken input can't be retried tightly.
+        st.session_state.setdefault("_gen_history", []).append(time.monotonic())
+        _log_event(
+            "generate_start",
+            file_hash=_hash_bytes(audio_bytes),
+            duration_sec=f"{duration_sec:.1f}",
+            voice_leading=voice_leading,
+            tempo_override=tempo_override,
+        )
         with st.status(
             "Generating arrangement… (typically 1–3 minutes on CPU)",
             expanded=True,
@@ -559,19 +684,33 @@ def main() -> None:
                     tempo_override=tempo_override if tempo_override > 0 else None,
                 )
             except FileNotFoundError as exc:
+                _counters()["fails"] += 1
+                _log_event("generate_fail", reason="checkpoint_missing", error=str(exc)[:80])
                 status.update(label="Checkpoint missing", state="error")
                 st.error(str(exc))
                 return
             except RuntimeError as exc:
+                _counters()["fails"] += 1
+                _log_event("generate_fail", reason="pipeline_error", error=str(exc)[:80])
                 status.update(label="Pipeline error", state="error")
                 st.error(f"Pipeline failed: {exc}")
                 return
             except Exception as exc:  # pragma: no cover — belt-and-braces
+                _counters()["fails"] += 1
+                _log_event("generate_fail", reason="unexpected", error=type(exc).__name__)
                 logger.exception("pipeline failed")
                 status.update(label="Unexpected error", state="error")
                 st.error(f"Unexpected error: {exc}")
                 return
             status.update(label="Done", state="complete")
+        _counters()["gens"] += 1
+        _log_event(
+            "generate_ok",
+            elapsed_sec=f"{info['elapsed_sec']:.2f}",
+            midi_bytes=len(midi_bytes),
+            gens_total=_counters()["gens"],
+            fails_total=_counters()["fails"],
+        )
         st.session_state["_result"] = {
             "key": cache_key,
             "midi_bytes": midi_bytes,
