@@ -28,6 +28,7 @@ import hashlib
 import io
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -211,19 +212,32 @@ def _ensure_checkpoint() -> Path:
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def _probe_audio(audio_bytes: bytes, suffix: str) -> tuple[float, int]:
-    """Return ``(duration_sec, sample_rate)`` for the uploaded audio.
+def _probe_duration(audio_bytes: bytes, suffix: str) -> float:
+    """Return duration in seconds of the uploaded audio.
 
-    Cached by ``audio_bytes`` so repeat toggles of the advanced-options
-    panel don't re-decode the file. ``suffix`` is part of the cache key
-    so two clips that happen to share bytes-length stay distinct.
+    Uses ``ffprobe`` (header-only read, ~200 ms) instead of
+    ``librosa.load`` (full decode, ~5–10 s for a 3-min MP3). The old
+    probe blocked Streamlit from painting the Generate button until
+    the entire file had been decoded — visible to the user as a
+    multi-second hang after upload. Only duration is needed downstream
+    so we skip pulling the waveform entirely.
     """
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
     try:
-        y, sr = librosa.load(tmp_path, sr=None, mono=True)
-        return float(len(y) / sr if sr > 0 else 0.0), int(sr)
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                tmp_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return float(result.stdout.strip())
     finally:
         os.unlink(tmp_path)
 
@@ -460,7 +474,7 @@ def main() -> None:
     suffix = Path(uploaded.name).suffix.lower() or ".mp3"
 
     try:
-        duration_sec, _sample_rate = _probe_audio(audio_bytes, suffix=suffix)
+        duration_sec = _probe_duration(audio_bytes, suffix=suffix)
     except Exception as exc:
         st.error(f"Couldn't read that audio file: {exc}")
         return
