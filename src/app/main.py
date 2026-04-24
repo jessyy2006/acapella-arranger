@@ -6,8 +6,9 @@ Single-page interface: upload an audio file, run the end-to-end
 Designed to be deployed (Streamlit Community Cloud or equivalent)
 as well as run locally via ``streamlit run src/app/main.py``. The
 pipeline is CPU/MPS-bound and takes 1–3 minutes per clip on a
-laptop; progress is surfaced via an ``st.status`` block so the user
-doesn't see a dead UI during generation.
+laptop or ~20 minutes on the deployed cpu-basic Space; progress
+is surfaced via an ``st.status`` block so the user doesn't see a
+dead UI during generation.
 
 Heavy steps:
 
@@ -667,7 +668,8 @@ def main() -> None:
             tempo_override=tempo_override,
         )
         with st.status(
-            "Generating arrangement… (typically 1–3 minutes on CPU)",
+            "Generating arrangement… (~20 minutes on the free cpu-basic Space; "
+            "much faster on local GPU or upgraded hardware)",
             expanded=True,
         ) as status:
             # run_pipeline is opaque — these lines document the stages
