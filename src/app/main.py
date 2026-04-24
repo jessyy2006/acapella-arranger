@@ -131,7 +131,7 @@ def _inject_css() -> None:
           }
           .aca-stat-value,
           .aca-stat-value * {
-              color: #FFFFFF !important;
+              color: #94A3B8 !important;
               font-size: 1.25rem;
               font-weight: 600;
           }
