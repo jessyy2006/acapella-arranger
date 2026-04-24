@@ -56,4 +56,4 @@ EXPOSE 7860
 # ``--server.headless true`` suppresses the "open browser" prompt;
 # ``--server.enableCORS false`` is required for the HF Spaces
 # iframe embed.
-CMD ["sh", "-c", "streamlit run src/app/main.py --server.port ${PORT:-7860} --server.address 0.0.0.0 --server.headless true --server.enableCORS false --browser.gatherUsageStats false"]
+CMD ["sh", "-c", "streamlit run src/app/main.py --server.port ${PORT:-7860} --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false --browser.gatherUsageStats false"]
