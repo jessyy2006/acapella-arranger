@@ -70,6 +70,7 @@ Known remaining limitations:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Final, Literal
 
@@ -629,7 +630,7 @@ def extract_lead_tokens(
     device: str | torch.device | None = None,
     crepe_model: _CrepeModel = "full",
     confidence_threshold: float = 0.5,
-    demucs_model: str = "htdemucs_ft",
+    demucs_model: str = os.environ.get("ACA_ADAPT_DEMUCS_MODEL", "htdemucs_ft"),
 ) -> tuple[list[int], float]:
     """End-to-end: audio file -> ``(lead_tokens, tempo_used_bpm)``.
 
