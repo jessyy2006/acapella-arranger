@@ -103,13 +103,26 @@ python -m src.training.train --config configs/train.yaml
 
 ## 7. Reproducing evaluation
 
-```bash
-python -m src.eval.evaluate --checkpoint models/hybrid_finetuned.pt
-python -m src.eval.evaluate --checkpoint models/transformer_baseline.pt
-python -m src.eval.ablation --sweep voice_leading,architecture
-```
+Each command writes a Markdown summary and JSON metrics to `reports/`. The CLI signatures match the actual argparse definitions in `src/eval/evaluate.py` and `src/eval/ablation.py`.
 
-Outputs land in `reports/` as Markdown summaries and PNG plots.
+```bash
+# Single-checkpoint evaluation on a cached test split
+python -m src.eval.evaluate \
+  --checkpoint checkpoints/phase_b/phase_b_final.pt \
+  --split data/processed/test_jacappella.pt \
+  --model-class hybrid \
+  --out-json reports/phase_b_jacappella_metrics.json
+
+# Ablation across multiple checkpoints (one --checkpoint NAME PATH per row)
+python -m src.eval.ablation \
+  --split data/processed/test_jacappella.pt \
+  --checkpoint hybrid_phase_b checkpoints/phase_b/phase_b_final.pt \
+  --checkpoint baseline_phase_a checkpoints/baseline_phase_a/baseline_phase_a_final.pt \
+  --out-png reports/plots/ablation.png
+
+# Parallel-motion violation counts (15 generated samples per checkpoint)
+python scripts/count_parallels.py
+```
 
 ## 8. Deployment
 
@@ -193,4 +206,4 @@ To enable GPU on Colab: **Runtime → Change runtime type → T4 GPU**.
 | CUDA out of memory during training | Reduce `batch_size` in `configs/train.yaml`. |
 | Streamlit app hangs on first upload | First inference downloads Demucs weights (~2 GB). Subsequent runs are fast. |
 | `music21` can't find chorales | Run `python -c "from music21 import corpus; corpus.chorales.Iterator()"` once to populate the cache. |
-| `crepe` TensorFlow version conflict | Pin `tensorflow>=2.12,<2.16` in your environment. |
+| `torchcrepe` model file not found on first run | First `pitch_track` call downloads the CREPE weights (~85 MB) into the torchcrepe cache; let it finish. |
